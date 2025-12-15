@@ -1,0 +1,30 @@
+[
+    {
+        "id": "mule",
+        "name": "Mule & Cart",
+        "rental_cost": 75,
+        "speed": "Slow",
+        "capacity": "Low"
+    },
+    {
+        "id": "train",
+        "name": "Rail Freight Car",
+        "rental_cost": 950,
+        "speed": "Medium",
+        "capacity": "High"
+    },
+    {
+        "id": "ship",
+        "name": "Cargo Schooner",
+        "rental_cost": 1500,
+        "speed": "Slow-Medium",
+        "capacity": "Very High"
+    },
+    {
+        "id": "plane",
+        "name": "Courier Biplane",
+        "rental_cost": 2500,
+        "speed": "Fast",
+        "capacity": "Very Low"
+    }
+]

@@ -1,0 +1,18 @@
+[
+    {
+        "id": "dockford",
+        "name": "Dockford",
+        "type": "Town",
+        "has_port": true,
+        "has_rail": true,
+        "has_airfield": false
+    },
+    {
+        "id": "farmville",
+        "name": "Farmville",
+        "type": "Rural Village",
+        "has_port": false,
+        "has_rail": true,
+        "has_airfield": false
+    }
+]

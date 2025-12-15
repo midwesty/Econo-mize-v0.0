@@ -1,0 +1,10 @@
+[
+    {
+        "id": 1,
+        "title": "Stink of Opportunity",
+        "origin": "Dockford",
+        "destination": "Farmville",
+        "reward": 225,
+        "cargo": "Pig dung for local farmers"
+    }
+]
