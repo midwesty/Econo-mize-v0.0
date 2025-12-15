@@ -1,0 +1,79 @@
+{
+  "buildings": [
+    {
+      "id": "hq_shell",
+      "type": "hq",
+      "name": "Tiny Warehouse HQ",
+      "level": 1,
+      "baseCost": 0,
+      "upgradeCosts": {
+        "level2": 1200
+      },
+      "capacity": 0,
+      "range": 0,
+      "reliability": 60,
+      "staffSlots": 1,
+      "features": ["paperwork_desk"]
+    },
+    {
+      "id": "dock_basic",
+      "type": "dock",
+      "name": "Small Dock",
+      "level": 1,
+      "baseCost": 3000,
+      "upgradeCosts": {
+        "level2": 5000
+      },
+      "capacity": 2,
+      "range": 0,
+      "reliability": 70,
+      "staffSlots": 3,
+      "features": ["lighthouse", "cargoHauler", "storageBay"]
+    },
+    {
+      "id": "met_station_basic",
+      "type": "meteorology",
+      "name": "Weather Office",
+      "level": 1,
+      "baseCost": 2200,
+      "upgradeCosts": {
+        "level2": 3600
+      },
+      "capacity": 0,
+      "range": 1,
+      "reliability": 65,
+      "staffSlots": 2,
+      "features": ["forecast_board", "storm_telegraph_link"]
+    },
+    {
+      "id": "telegraph_basic",
+      "type": "telegraph",
+      "name": "Telegraph Desk",
+      "level": 1,
+      "baseCost": 1800,
+      "upgradeCosts": {
+        "level2": 2800
+      },
+      "capacity": 0,
+      "range": 1,
+      "reliability": 60,
+      "staffSlots": 1,
+      "features": ["priority_contracts"]
+    },
+    {
+      "id": "rail_depot_basic",
+      "type": "railDepot",
+      "name": "Rail Depot Office",
+      "level": 1,
+      "baseCost": 3600,
+      "upgradeCosts": {
+        "level2": 6200
+      },
+      "capacity": 2,
+      "range": 0,
+      "reliability": 70,
+      "staffSlots": 2,
+      "features": ["switchyard_pass", "cargo_loading_team"]
+    }
+  ]
+}

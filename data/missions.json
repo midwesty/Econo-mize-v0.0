@@ -1,10 +1,38 @@
-[
+{
+  "missions": [
     {
-        "id": 1,
-        "title": "Stink of Opportunity",
-        "origin": "Dockford",
-        "destination": "Farmville",
-        "reward": 225,
-        "cargo": "Pig dung for local farmers"
+      "id": "mission_pigdung_001",
+      "name": "Stink of Opportunity",
+      "description": "Deliver pig dung from Dockford to Farmville. It’s disgusting, but the pay is real.",
+      "originCityId": "city_dockford",
+      "destinationCityId": "city_farmville",
+      "cargo": {
+        "type": "pig_dung",
+        "baseValue": 225
+      },
+      "baseReward": 225,
+      "baseDurationHours": 8,
+      "difficulty": 1,
+      "allowedTransportTypes": ["mule", "train", "ship", "plane", "dirigible"],
+      "deadlineHours": 24,
+      "tutorial": true
+    },
+    {
+      "id": "mission_tools_002",
+      "name": "Crate & Consequence",
+      "description": "Move a shipment of tools to Ironridge. The buyer is picky about timing.",
+      "originCityId": "city_dockford",
+      "destinationCityId": "city_ironridge",
+      "cargo": {
+        "type": "tools",
+        "baseValue": 340
+      },
+      "baseReward": 340,
+      "baseDurationHours": 14,
+      "difficulty": 2,
+      "allowedTransportTypes": ["mule", "train", "ship", "plane", "dirigible"],
+      "deadlineHours": 30,
+      "tutorial": false
     }
-]
+  ]
+}

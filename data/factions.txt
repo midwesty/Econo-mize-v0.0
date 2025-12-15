@@ -1,0 +1,22 @@
+{
+  "factions": [
+    {
+      "id": "faction_foxhound",
+      "name": "Fox Hound Gang",
+      "type": "bandit",
+      "territories": ["region_road_dockford_farmville"],
+      "strength": 70,
+      "attitudeTowardsPlayer": -20,
+      "notes": "Ambush specialists. Prefer muddy roads and slow carts."
+    },
+    {
+      "id": "faction_dockford_union",
+      "name": "Dockford Labor Union",
+      "type": "trade",
+      "territories": ["region_coastal_west"],
+      "strength": 45,
+      "attitudeTowardsPlayer": 5,
+      "notes": "Not hostile. They respect fair pay and steady contracts."
+    }
+  ]
+}

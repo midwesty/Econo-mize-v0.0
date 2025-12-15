@@ -1,0 +1,40 @@
+{
+  "investments": [
+    {
+      "id": "inv_delly_diner",
+      "cityId": "city_dockford",
+      "name": "Delly's Diner Expansion",
+      "type": "loan",
+      "cost": 250,
+      "totalReturn": 400,
+      "durationDays": 6,
+      "risk": 10,
+      "tags": ["food", "staff_gain_possible"],
+      "description": "Delly wants to add a second stove and hire a server. Repays steadily if the dock stays busy."
+    },
+    {
+      "id": "inv_oddjob_cart_repair",
+      "cityId": "city_dockford",
+      "name": "Odd Job: Cart Repairs",
+      "type": "odd_job",
+      "cost": 50,
+      "totalReturn": 80,
+      "durationDays": 2,
+      "risk": 3,
+      "tags": ["safe", "starter"],
+      "description": "Pay a small crew to refurbish spare wheels. Low return, almost no risk."
+    },
+    {
+      "id": "inv_farm_silo_shares",
+      "cityId": "city_farmville",
+      "name": "Farm Silo Shares",
+      "type": "shares",
+      "cost": 300,
+      "totalReturn": 520,
+      "durationDays": 8,
+      "risk": 18,
+      "tags": ["agriculture"],
+      "description": "A new silo means more trade, but bandits and storms can slow returns."
+    }
+  ]
+}

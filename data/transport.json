@@ -1,30 +1,59 @@
-[
+{
+  "transport": [
     {
-        "id": "mule",
-        "name": "Mule & Cart",
-        "rental_cost": 75,
-        "speed": "Slow",
-        "capacity": "Low"
+      "id": "mule",
+      "name": "Mule & Cart",
+      "baseRentalCost": 100,
+      "basePurchaseCost": 2000,
+      "speed": 1,
+      "capacity": 10,
+      "baseRisk": 10,
+      "allowedRange": "local",
+      "upkeep": 0
     },
     {
-        "id": "train",
-        "name": "Rail Freight Car",
-        "rental_cost": 950,
-        "speed": "Medium",
-        "capacity": "High"
+      "id": "train",
+      "name": "Leased Train Car",
+      "baseRentalCost": 900,
+      "basePurchaseCost": 12000,
+      "speed": 3,
+      "capacity": 60,
+      "baseRisk": 14,
+      "allowedRange": "regional",
+      "upkeep": 35
     },
     {
-        "id": "ship",
-        "name": "Cargo Schooner",
-        "rental_cost": 1500,
-        "speed": "Slow-Medium",
-        "capacity": "Very High"
+      "id": "ship",
+      "name": "Coastal Steamship",
+      "baseRentalCost": 1400,
+      "basePurchaseCost": 22000,
+      "speed": 2,
+      "capacity": 90,
+      "baseRisk": 18,
+      "allowedRange": "coastal",
+      "upkeep": 50
     },
     {
-        "id": "plane",
-        "name": "Courier Biplane",
-        "rental_cost": 2500,
-        "speed": "Fast",
-        "capacity": "Very Low"
+      "id": "plane",
+      "name": "Early Cargo Plane",
+      "baseRentalCost": 2800,
+      "basePurchaseCost": 45000,
+      "speed": 5,
+      "capacity": 20,
+      "baseRisk": 26,
+      "allowedRange": "regional",
+      "upkeep": 80
+    },
+    {
+      "id": "dirigible",
+      "name": "Dirigible Freighter",
+      "baseRentalCost": 6200,
+      "basePurchaseCost": 98000,
+      "speed": 4,
+      "capacity": 140,
+      "baseRisk": 22,
+      "allowedRange": "intercontinental",
+      "upkeep": 140
     }
-]
+  ]
+}

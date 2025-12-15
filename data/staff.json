@@ -1,0 +1,52 @@
+{
+  "templates": [
+    {
+      "id": "staff_001",
+      "name": "Harun Eddin",
+      "role": "meteorologist",
+      "salaryDaily": 12,
+      "skills": {
+        "forecasting": 60,
+        "navigation": 20,
+        "logistics": 10,
+        "security": 5
+      },
+      "traits": ["ObsessedWithClouds"],
+      "experience": 100,
+      "loyalty": 50,
+      "availabilityCityIds": ["city_dockford", "city_farmville"]
+    },
+    {
+      "id": "staff_002",
+      "name": "Mira Sallow",
+      "role": "logistics",
+      "salaryDaily": 14,
+      "skills": {
+        "forecasting": 15,
+        "navigation": 35,
+        "logistics": 55,
+        "security": 10
+      },
+      "traits": ["Methodical"],
+      "experience": 80,
+      "loyalty": 45,
+      "availabilityCityIds": ["city_dockford"]
+    },
+    {
+      "id": "staff_003",
+      "name": "Bram Calder",
+      "role": "dockWorker",
+      "salaryDaily": 10,
+      "skills": {
+        "forecasting": 5,
+        "navigation": 10,
+        "logistics": 35,
+        "security": 25
+      },
+      "traits": ["StrongBack", "ShortTemper"],
+      "experience": 60,
+      "loyalty": 55,
+      "availabilityCityIds": ["city_dockford", "city_ironridge"]
+    }
+  ]
+}

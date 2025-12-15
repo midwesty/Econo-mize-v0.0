@@ -1,75 +1,121 @@
+<!-- =========================================================================
+Fleet Baron (Working Title) — /index.html
+Single Page App shell for the demo.
+
+Expected files:
+  /index.html
+  /style.css
+  /game.js
+  /data/*.json
+  /assets/map.png
+  /assets/town.png
+
+This HTML matches the IDs that game.js looks for, so it won’t need to auto-generate
+the UI scaffold (but it still can if you edit this later).
+========================================================================= -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <title>Fleet & Fortune v0.1</title>
-    <link rel="stylesheet" href="style.css">
-</head>
-<body onload="initGame()">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Fleet Baron (Demo)</title>
 
-    <!-- Top HUD -->
-    <header id="top-bar">
-        <div class="hud-item" id="hud-weather">Weather: --</div>
-        <div class="hud-item" id="hud-credits">Credits: 0</div>
-        <div class="hud-item" id="hud-time">Date: --</div>
+  <link rel="stylesheet" href="./style.css" />
+
+  <!-- Optional: basic favicon (add your own) -->
+  <link rel="icon" href="data:," />
+</head>
+
+<body>
+  <div id="appRoot" class="appRoot">
+
+    <!-- ===========================
+         TOP BAR / HUD
+    ============================ -->
+    <header id="topBar" class="topBar">
+      <div id="gameTitle" class="gameTitle">Fleet Baron</div>
+
+      <button id="btnWorld" class="btn active" type="button">World Map</button>
+      <button id="btnTown" class="btn" type="button">Town Map</button>
+
+      <button id="btnSave" class="btn" type="button">Save</button>
+      <button id="btnLoad" class="btn" type="button">Load</button>
+      <button id="btnReset" class="btn danger" type="button">Reset</button>
+
+      <div id="timeDisplay" class="hudItem">Day 1 08:00</div>
+      <div id="weatherDisplay" class="hudItem">Weather: —</div>
     </header>
 
-    <!-- Main Game Container -->
-    <div id="game-wrapper">
-        
-        <!-- Sidebar Menu -->
-        <aside id="sidebar">
-            <h2>Fleet & Fortune</h2>
-            <button onclick="togglePanel('map')">🗺️ Map</button>
-            <button onclick="togglePanel('missions')">📜 Missions</button>
-            <button onclick="togglePanel('transport')">🚚 Transport</button>
-            <button onclick="togglePanel('staff')">🧍 Staff</button>
-            <button onclick="togglePanel('services')">🛠️ Services</button>
-            <button onclick="togglePanel('log')">📖 Log</button>
-        </aside>
+    <!-- ===========================
+         MAIN AREA
+         - Left: World/Town views
+         - Right: Sidebar tabs
+    ============================ -->
+    <div id="mainArea" class="mainArea">
 
-        <!-- Main View Panels -->
-        <main id="main-display">
+      <div id="viewWrap" class="viewWrap">
+        <!-- ===== WORLD VIEW ===== -->
+        <div id="worldView" class="view worldView">
+          <img
+            id="worldMapImage"
+            class="mapImage"
+            src="./assets/map.png"
+            alt="World Map"
+            draggable="false"
+          />
+          <div id="worldMarkers" class="markerLayer" aria-label="World markers"></div>
+        </div>
 
-            <section id="map-panel" class="panel active">
-                <h3>World Map</h3>
-                <img src="https://via.placeholder.com/800x400?text=MAP+PLACEHOLDER" alt="Map Placeholder" class="placeholder-img">
-            </section>
+        <!-- ===== TOWN VIEW ===== -->
+        <div id="townView" class="view townView" style="display:none;">
+          <img
+            id="townMapImage"
+            class="mapImage"
+            src="./assets/town.png"
+            alt="Town Map"
+            draggable="false"
+          />
+          <div id="townMarkers" class="markerLayer" aria-label="Town markers"></div>
+        </div>
+      </div>
 
-            <section id="missions-panel" class="panel">
-                <h3>Available Missions</h3>
-                <div id="mission-list"></div>
-            </section>
+      <!-- ===== SIDEBAR ===== -->
+      <aside id="sidebar" class="sidebar">
+        <div id="tabs" class="tabs">
+          <button id="tabBtn_log" class="tabBtn active" type="button">Log</button>
+          <button id="tabBtn_missions" class="tabBtn" type="button">Missions</button>
+          <button id="tabBtn_staff" class="tabBtn" type="button">Staff</button>
+          <button id="tabBtn_investments" class="tabBtn" type="button">Investments</button>
+        </div>
 
-            <section id="transport-panel" class="panel">
-                <h3>Transport Options</h3>
-                <div id="transport-list"></div>
-            </section>
+        <div id="tabPanels" class="tabPanels">
+          <div id="tabPanel_log" class="tabPanel"></div>
+          <div id="tabPanel_missions" class="tabPanel" style="display:none;"></div>
+          <div id="tabPanel_staff" class="tabPanel" style="display:none;"></div>
+          <div id="tabPanel_investments" class="tabPanel" style="display:none;"></div>
+        </div>
+      </aside>
 
-            <section id="staff-panel" class="panel">
-                <h3>Available Staff</h3>
-                <div id="staff-list"></div>
-            </section>
-
-            <section id="services-panel" class="panel">
-                <h3>Town Services</h3>
-                <div id="services-list"></div>
-            </section>
-
-            <section id="log-panel" class="panel">
-                <h3>Mission Log</h3>
-                <div id="log-box"></div>
-            </section>
-
-        </main>
     </div>
 
-    <!-- Bottom Notification Bar -->
-    <footer id="bottom-bar">
-        <span id="notif-msg">Welcome to Fleet & Fortune.</span>
+    <!-- ===========================
+         BOTTOM BAR
+    ============================ -->
+    <footer id="bottomBar" class="bottomBar">
+      <div id="moneyDisplay" class="hudItem">Money: 500 c</div>
+      <div id="incomeDisplay" class="hudItem">Income/Upkeep: —</div>
+      <div id="alertsDisplay" class="hudItem alerts" aria-live="polite"></div>
     </footer>
 
-    <!-- JS -->
-    <script src="game.js"></script>
+    <!-- ===========================
+         MODALS + TUTORIAL OVERLAY
+    ============================ -->
+    <div id="modalRoot" class="modalRoot" aria-label="Modal container"></div>
+    <div id="tutorialOverlay" class="tutorialOverlay hidden" aria-label="Tutorial overlay"></div>
+
+  </div>
+
+  <!-- Main game logic -->
+  <script src="./game.js"></script>
 </body>
 </html>

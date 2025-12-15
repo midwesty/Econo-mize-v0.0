@@ -1,0 +1,83 @@
+{
+  "events": [
+    {
+      "id": "evt_mud_ruts",
+      "name": "Mud Ruts",
+      "category": "weather",
+      "minRisk": 10,
+      "maxRisk": 60,
+      "weight": 18,
+      "logText": "Weather turns wet. The road becomes a ribbon of mud.",
+      "outcomeText": "Progress slows as the cart fights through deep ruts.",
+      "modifiers": {
+        "durationMult": 1.12,
+        "rewardMult": 1.0,
+        "cargoLossPct": 0
+      }
+    },
+    {
+      "id": "evt_bandit_shakedown",
+      "name": "Bandit Shakedown",
+      "category": "bandits",
+      "minRisk": 25,
+      "maxRisk": 90,
+      "weight": 14,
+      "logText": "A road crew turns out to be armed men with polite smiles.",
+      "outcomeText": "The Fox Hound Gang shakes down the crew. Some cargo goes missing.",
+      "modifiers": {
+        "durationMult": 1.05,
+        "rewardMult": 0.85,
+        "cargoLossPct": 18,
+        "reputationDelta": -2
+      },
+      "factionId": "faction_foxhound"
+    },
+    {
+      "id": "evt_lucky_tailwind",
+      "name": "Lucky Break",
+      "category": "lucky",
+      "minRisk": 0,
+      "maxRisk": 55,
+      "weight": 16,
+      "logText": "A friendly farmer offers a shortcut through solid ground.",
+      "outcomeText": "The crew makes excellent time and avoids the worst of the mud.",
+      "modifiers": {
+        "durationMult": 0.9,
+        "rewardMult": 1.05,
+        "cargoLossPct": 0,
+        "reputationDelta": 1
+      }
+    },
+    {
+      "id": "evt_broken_axle",
+      "name": "Broken Axle",
+      "category": "mechanical",
+      "minRisk": 18,
+      "maxRisk": 85,
+      "weight": 12,
+      "logText": "A loud crack echoes — the cart axle gives up.",
+      "outcomeText": "Repairs cost time and a small fee. The cargo is mostly intact.",
+      "modifiers": {
+        "durationMult": 1.18,
+        "rewardMult": 0.95,
+        "cargoLossPct": 5
+      }
+    },
+    {
+      "id": "evt_heroic_hand",
+      "name": "Heroic Help",
+      "category": "heroic",
+      "minRisk": 0,
+      "maxRisk": 50,
+      "weight": 10,
+      "logText": "A passing patrol recognizes your paperwork and lends a hand.",
+      "outcomeText": "Security improves for the rest of the trip; the crew arrives confidently.",
+      "modifiers": {
+        "durationMult": 0.98,
+        "rewardMult": 1.02,
+        "cargoLossPct": 0,
+        "reputationDelta": 1
+      }
+    }
+  ]
+}

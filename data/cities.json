@@ -1,18 +1,94 @@
-[
+{
+  "cities": [
     {
-        "id": "dockford",
-        "name": "Dockford",
-        "type": "Town",
-        "has_port": true,
-        "has_rail": true,
-        "has_airfield": false
+      "id": "city_dockford",
+      "name": "Dockford",
+      "regionId": "region_coastal_west",
+      "description": "A salt-air port town with muddy streets, cheap labor, and constant opportunity.",
+      "x": 22,
+      "y": 62,
+      "isStarterHQ": true,
+      "fees": {
+        "dockUseFee": 60,
+        "railUseFee": 120,
+        "airfieldUseFee": 220
+      }
     },
     {
-        "id": "farmville",
-        "name": "Farmville",
-        "type": "Rural Village",
-        "has_port": false,
-        "has_rail": true,
-        "has_airfield": false
+      "id": "city_farmville",
+      "name": "Farmville",
+      "regionId": "region_inland_plains",
+      "description": "A booming agricultural hub. Roads are busy, and bandits like it that way.",
+      "x": 42,
+      "y": 55,
+      "isStarterHQ": false,
+      "fees": {
+        "dockUseFee": 0,
+        "railUseFee": 100,
+        "airfieldUseFee": 200
+      }
+    },
+    {
+      "id": "city_ironridge",
+      "name": "Ironridge",
+      "regionId": "region_mountain_north",
+      "description": "A hard, industrial city. Trains thrive here; weather does not.",
+      "x": 62,
+      "y": 34,
+      "isStarterHQ": false,
+      "fees": {
+        "dockUseFee": 0,
+        "railUseFee": 140,
+        "airfieldUseFee": 260
+      }
     }
-]
+  ],
+  "knownRoutes": [
+    {
+      "id": "route_dockford_farmville_mainroad",
+      "name": "Main Road",
+      "originCityId": "city_dockford",
+      "destinationCityId": "city_farmville",
+      "routeType": "road",
+      "baseRiskModifier": -4,
+      "durationModifier": 1.0,
+      "notes": "Maintained road. Slower after rain, but safer than shortcuts."
+    },
+    {
+      "id": "route_dockford_farmville_shady",
+      "name": "Shady Shortcut",
+      "originCityId": "city_dockford",
+      "destinationCityId": "city_farmville",
+      "routeType": "road",
+      "baseRiskModifier": 10,
+      "durationModifier": 0.85,
+      "notes": "Faster and cheaper. Also where the Fox Hound Gang likes to hunt."
+    }
+  ],
+  "regions": [
+    {
+      "id": "region_coastal_west",
+      "name": "Coastal West",
+      "baseRisk": 8,
+      "weatherBias": ["clear", "rain", "fog"]
+    },
+    {
+      "id": "region_inland_plains",
+      "name": "Inland Plains",
+      "baseRisk": 15,
+      "weatherBias": ["clear", "rain", "storm"]
+    },
+    {
+      "id": "region_mountain_north",
+      "name": "Mountain North",
+      "baseRisk": 22,
+      "weatherBias": ["clear", "fog", "storm"]
+    },
+    {
+      "id": "region_road_dockford_farmville",
+      "name": "Dockford–Farmville Road",
+      "baseRisk": 18,
+      "weatherBias": ["rain", "storm", "fog"]
+    }
+  ]
+}
