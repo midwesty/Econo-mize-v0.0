@@ -1,2778 +1,2506 @@
 /* ============================================================================
-Fleet Baron (Working Title: Fleet Baron / Fleet Baron Demo)
-File: /game.js
-Stack: Vanilla JS (no dependencies)
--------------------------------------------------------------------------------
-This JS expects your project structure (per bible):
+Fleet Baron (Demo) — game.js
+Vanilla JS single-file MVP implementation.
 
-/index.html
-/style.css
-/game.js   <-- this file
-/data/
-  cities.json
-  missions.json
-  transport.json
-  buildings.json
-  staff.json
-  factions.json
-  events.json
-  investments.json
-/assets/
-  map.png
-  town.png
-  icons/*.png
+You have:
+  /index.html  (IDs must match)
+  /style.css
+  /data/
+    cities.json
+    missions.json
+    transport.json
+    buildings.json
+    staff.json
+    factions.json
+    events.json
+    investments.json
 
-IMPORTANT RULE (per your bible):
-- All game content is loaded from JSON. This JS does NOT hardcode any game content.
-- If required JSON is missing or malformed, the game will show a blocking error with
-  instructions in the Log panel.
-
-This file builds a functional MVP demo:
-- World map + Town map toggle
-- Clickable cities (from cities.json)
-- Missions panel with tutorial pig-dung mission flow (missions.json)
-- Mission Planner (transport choice; mule affordable; others visible)
-- Mission timer loop + in-transit events + resolution engine
-- Weather model + pay-for-forecast service (if services are defined in buildings.json)
-- Basic staff hiring + assignment affecting mission outcome (staff.json)
-- Investments panel with 1–2 starter opportunities (investments.json)
+This file implements:
+- World/Town views with clickable markers
+- Tabs: Log / Missions / Staff / Investments
+- Tutorial: intro + guided first mission planning
+- Mission Planner (transport/route/services/staff/supplies) + dispatch
+- Active mission tracking with in-game-time progress & events
+- Staff hiring + basic roster management
+- Investments: start + mature + payout
 - Save/Load/Reset via localStorage
 
-You will paste this into GitHub as /game.js.
 ============================================================================ */
 
 (() => {
   "use strict";
 
-  /* ==============================
-   *  CONFIG
-   * ============================== */
-
-  const APP = {
-    title: "Fleet Baron",
-    version: "0.1.0-demo",
-    storageKey: "fleet_baron_save_v0_1_0",
-    tickMs: 250,
-
-    // Time Model (per bible): 1 real second ≈ 10 in-game minutes (tuneable).
-    // This means: 1 real second = 10 game minutes = 10 * 60 = 600 game seconds.
-    // We'll store time as totalGameMinutes for simplicity.
-    realSecondToGameMinutes: 10,
-
-    // Missions: baseDurationHours (game hours). Convert to game minutes for end time.
-    // Base: 1 game hour = 60 minutes (game minutes).
-    minutesPerHour: 60,
-
-    // If you want slightly longer/shorter demo, adjust this multiplier:
-    timeRateMultiplier: 1.0,
-
-    // UI / Layout defaults (only used if index.html is missing expected nodes)
-    defaultMapImage: "./assets/map.png",
-    defaultTownImage: "./assets/town.png",
-
-    // MVP: Required data files
-    dataFiles: [
-      "cities.json",
-      "missions.json",
-      "transport.json",
-      "buildings.json",
-      "staff.json",
-      "factions.json",
-      "events.json",
-      "investments.json",
-    ],
-
-    // MVP: Transport → required facility type (for fees/bonuses)
-    transportFacilityTypeMap: {
-      mule: null,
-      train: "railDepot",
-      ship: "dock",
-      plane: "airfield",
-      dirigible: "hangar",
+  /* =========================
+     CONFIG
+  ========================== */
+  const CONFIG = {
+    storageKey: "fleet_baron_save_v1",
+    tickMs: 1000,               // real ms per tick
+    minutesPerSecond: 10,       // 1 real second = 10 in-game minutes
+    startDay: 1,
+    startHour: 8,
+    startMinute: 0,
+    // duration tuning: derived duration uses this scale
+    mapUnitKm: 12,              // map "percent points" converted to km (tune)
+    baseSpeedKmPerHour: 10,     // speed factor baseline (tune)
+    eventCheckIntervalMins: 120, // check for travel event every 2 in-game hours
+    maxEventsPerMission: 2,
+    // basic service costs
+    services: {
+      forecast: { cost: 25, bonus: 6 },
+      cargoPrep: { cost: 35, bonus: 7 },
+      crewBroker: { cost: 45, bonus: 8 }
     },
-
-    // Safety
-    maxLogEntries: 300,
-
-    // Tutorial mission ID (must exist in missions.json)
-    tutorialMissionId: "mission_pigdung_001",
-
-    // Starter HQ city ID (must exist in cities.json)
-    starterCityId: "city_dockford",
-
-    // Basic bankruptcy threshold (per bible)
-    bankruptcyMoneyThreshold: 100,
+    // basic supplies (placeholder "stocking vessel")
+    supplies: {
+      none: { name: "None", cost: 0, bonus: 0 },
+      basic: { name: "Basic Supplies", cost: 15, bonus: 3 },
+      sturdy: { name: "Sturdy Supplies", cost: 35, bonus: 6 },
+      premium: { name: "Premium Supplies", cost: 65, bonus: 10 }
+    },
+    // basic infra lease costs when player lacks owned facilities (fees come from city data too)
+    infra: {
+      originHandling: 15,
+      destinationHandling: 15
+    },
+    // tutorial behavior
+    tutorial: {
+      enabled: true
+    }
   };
 
-  /* ==============================
-   *  UTILITIES
-   * ============================== */
+  const DATA_FILES = {
+    cities: "./data/cities.json",
+    missions: "./data/missions.json",
+    transport: "./data/transport.json",
+    buildings: "./data/buildings.json",
+    staff: "./data/staff.json",
+    factions: "./data/factions.json",
+    events: "./data/events.json",
+    investments: "./data/investments.json"
+  };
 
-  const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
-  const lerp = (a, b, t) => a + (b - a) * t;
+  /* =========================
+     DOM HELPERS
+  ========================== */
+  const $ = (sel, root = document) => root.querySelector(sel);
+  const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
-  function safeJsonParse(str) {
-    try {
-      return JSON.parse(str);
-    } catch {
-      return null;
-    }
+  function el(tag, className, text) {
+    const n = document.createElement(tag);
+    if (className) n.className = className;
+    if (text !== undefined) n.textContent = text;
+    return n;
   }
 
-  function uid(prefix = "id") {
-    return `${prefix}_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
-  }
+  function clamp(n, a, b) { return Math.max(a, Math.min(b, n)); }
+  function round2(n) { return Math.round(n * 100) / 100; }
+  function deepClone(obj) { return JSON.parse(JSON.stringify(obj)); }
 
   function fmtMoney(n) {
-    const v = Math.round(Number(n) || 0);
-    return `${v} c`;
+    const s = Math.round(n).toString();
+    return `${s} c`;
   }
 
-  function fmtPct(n) {
-    const v = Math.round((Number(n) || 0) * 100);
-    return `${v}%`;
+  function pad2(n) { return (n < 10 ? "0" : "") + n; }
+
+  function nowStamp(state) {
+    const t = state.world.time;
+    return `Day ${t.day} ${pad2(t.hour)}:${pad2(t.minute)}`;
   }
 
-  function pad2(n) {
-    return String(n).padStart(2, "0");
+  function rngInt(min, max) {
+    return Math.floor(Math.random() * (max - min + 1)) + min;
   }
 
-  function deepClone(obj) {
-    return JSON.parse(JSON.stringify(obj));
-  }
-
-  function el(tag, attrs = {}, children = []) {
-    const node = document.createElement(tag);
-    for (const [k, v] of Object.entries(attrs)) {
-      if (k === "class") node.className = v;
-      else if (k === "html") node.innerHTML = String(v);
-      else if (k === "text") node.textContent = String(v);
-      else if (k.startsWith("on") && typeof v === "function") node.addEventListener(k.slice(2), v);
-      else node.setAttribute(k, String(v));
-    }
-    for (const child of Array.isArray(children) ? children : [children]) {
-      if (child == null) continue;
-      if (typeof child === "string") node.appendChild(document.createTextNode(child));
-      else node.appendChild(child);
-    }
-    return node;
-  }
-
-  function qs(sel, root = document) {
-    return root.querySelector(sel);
-  }
-
-  function qsa(sel, root = document) {
-    return Array.from(root.querySelectorAll(sel));
-  }
-
-  function nowMs() {
-    return Date.now();
-  }
-
-  function rand01() {
-    return Math.random();
-  }
-
-  function pickOne(arr) {
-    if (!arr || !arr.length) return null;
-    return arr[Math.floor(Math.random() * arr.length)];
-  }
-
-  // Weighted pick: [{item, w}, ...]
-  function pickWeighted(weighted) {
-    const items = (weighted || []).filter(x => x && Number(x.w) > 0);
-    if (!items.length) return null;
-    const total = items.reduce((s, x) => s + x.w, 0);
+  function pickWeighted(items, getWeight) {
+    const total = items.reduce((a, it) => a + Math.max(0, getWeight(it)), 0);
+    if (total <= 0) return null;
     let r = Math.random() * total;
-    for (const x of items) {
-      r -= x.w;
-      if (r <= 0) return x.item;
+    for (const it of items) {
+      r -= Math.max(0, getWeight(it));
+      if (r <= 0) return it;
     }
-    return items[items.length - 1].item;
+    return items[items.length - 1] || null;
   }
 
-  /* ==============================
-   *  DATA LOADING + INDEXES
-   * ============================== */
-
-  const Data = {
-    cities: [],
-    missions: [],
-    transport: [],
-    buildings: [],
-    staff: [],
-    factions: [],
-    events: [],
-    investments: [],
-
-    // Indexes
-    cityById: new Map(),
-    missionById: new Map(),
-    transportById: new Map(),
-    buildingById: new Map(),
-    staffById: new Map(),
-    factionById: new Map(),
-    eventById: new Map(),
-    investmentById: new Map(),
-
-    // Optional global service definitions (recommended):
-    // buildings.json may include:
-    // { "services": [ { "id":"svc_weather_forecast", "name":"Weather Forecast", "cost":50, "bonuses":{...}, "tags":["weather"] }, ... ] }
-    services: [],
-    serviceById: new Map(),
-
-    // Optional known routes:
-    // cities.json may include: routes: [{id, fromCityId, toCityId, riskModifier, distanceModifier, tags:[...]}]
-    routes: [],
-    routesByKey: new Map(), // key: from|to
-  };
-
-  async function fetchJson(path) {
-    const res = await fetch(path, { cache: "no-store" });
-    if (!res.ok) throw new Error(`Failed to load ${path} (${res.status})`);
-    return await res.json();
-  }
-
-  function buildIndexes() {
-    Data.cityById.clear();
-    Data.missionById.clear();
-    Data.transportById.clear();
-    Data.buildingById.clear();
-    Data.staffById.clear();
-    Data.factionById.clear();
-    Data.eventById.clear();
-    Data.investmentById.clear();
-    Data.serviceById.clear();
-    Data.routesByKey.clear();
-
-    for (const c of Data.cities) Data.cityById.set(c.id, c);
-    for (const m of Data.missions) Data.missionById.set(m.id, m);
-    for (const t of Data.transport) Data.transportById.set(t.id, t);
-    for (const b of Data.buildings) Data.buildingById.set(b.id, b);
-    for (const s of Data.staff) Data.staffById.set(s.id, s);
-    for (const f of Data.factions) Data.factionById.set(f.id, f);
-    for (const e of Data.events) Data.eventById.set(e.id, e);
-    for (const inv of Data.investments) Data.investmentById.set(inv.id, inv);
-
-    // Services: prefer buildings.json top-level "services" array if present
-    Data.services = [];
-    Data.serviceById.clear();
-    if (Array.isArray(Data.buildings?.services)) {
-      Data.services = Data.buildings.services;
-    } else if (Array.isArray(Data.buildings) && Data.buildings.some(x => x && x.type === "service")) {
-      Data.services = Data.buildings.filter(x => x && x.type === "service");
-    }
-    for (const svc of Data.services) Data.serviceById.set(svc.id, svc);
-
-    // Routes: prefer cities.json top-level "routes" array if present
-    Data.routes = [];
-    if (Array.isArray(Data.cities?.routes)) {
-      Data.routes = Data.cities.routes;
-    } else if (Array.isArray(Data.cities) && Data.cities.some(x => Array.isArray(x.routes))) {
-      // alternate schema: city.routes (not recommended)
-      const all = [];
-      for (const c of Data.cities) {
-        for (const r of (c.routes || [])) all.push(r);
-      }
-      Data.routes = all;
-    }
-    for (const r of Data.routes) {
-      if (!r || !r.fromCityId || !r.toCityId) continue;
-      Data.routesByKey.set(`${r.fromCityId}|${r.toCityId}`, r);
-      Data.routesByKey.set(`${r.toCityId}|${r.fromCityId}`, { ...r, fromCityId: r.toCityId, toCityId: r.fromCityId });
-    }
-  }
-
-  function validateDataOrThrow() {
-    const errs = [];
-
-    const mustArray = (name, val) => {
-      if (!Array.isArray(val)) errs.push(`${name} must be an array.`);
-    };
-
-    mustArray("cities.json", Data.cities);
-    mustArray("missions.json", Data.missions);
-    mustArray("transport.json", Data.transport);
-    // buildings.json can be either array OR { buildings: [...], services:[...] }, so normalize:
-    if (!(Array.isArray(Data.buildings) || (Data.buildings && Array.isArray(Data.buildings.buildings)))) {
-      errs.push("buildings.json must be an array OR an object containing { buildings: [...] }.");
-    }
-    mustArray("staff.json", Data.staff);
-    mustArray("factions.json", Data.factions);
-    mustArray("events.json", Data.events);
-    mustArray("investments.json", Data.investments);
-
-    // Normalize buildings if object form
-    if (Data.buildings && !Array.isArray(Data.buildings) && Array.isArray(Data.buildings.buildings)) {
-      const obj = Data.buildings;
-      // preserve optional services as top-level
-      const arr = obj.buildings;
-      // attach services onto array so buildIndexes can read either
-      arr.services = obj.services || [];
-      Data.buildings = arr;
-    }
-
-    // Basic ID checks
-    const requireIds = (arrName, arr) => {
-      const seen = new Set();
-      for (const x of arr || []) {
-        if (!x || !x.id) errs.push(`${arrName} has an item missing "id".`);
-        else {
-          if (seen.has(x.id)) errs.push(`${arrName} has duplicate id: ${x.id}`);
-          seen.add(x.id);
-        }
-      }
-    };
-
-    requireIds("cities.json", Data.cities);
-    requireIds("missions.json", Data.missions);
-    requireIds("transport.json", Data.transport);
-    requireIds("buildings.json", Data.buildings);
-    requireIds("staff.json", Data.staff);
-    requireIds("factions.json", Data.factions);
-    requireIds("events.json", Data.events);
-    requireIds("investments.json", Data.investments);
-
-    // Must contain starter city and tutorial mission
-    if (!Data.cities.some(c => c.id === APP.starterCityId)) {
-      errs.push(`Missing starter city id "${APP.starterCityId}" in cities.json.`);
-    }
-    if (!Data.missions.some(m => m.id === APP.tutorialMissionId)) {
-      errs.push(`Missing tutorial mission id "${APP.tutorialMissionId}" in missions.json.`);
-    }
-    if (!Data.transport.some(t => t.id === "mule")) {
-      errs.push(`transport.json must include transport with id "mule" for MVP.`);
-    }
-
-    if (errs.length) throw new Error(errs.join("\n"));
-  }
-
-  async function loadAllData() {
-    const base = "./data/";
-    const [cities, missions, transport, buildings, staff, factions, events, investments] = await Promise.all([
-      fetchJson(base + "cities.json"),
-      fetchJson(base + "missions.json"),
-      fetchJson(base + "transport.json"),
-      fetchJson(base + "buildings.json"),
-      fetchJson(base + "staff.json"),
-      fetchJson(base + "factions.json"),
-      fetchJson(base + "events.json"),
-      fetchJson(base + "investments.json"),
-    ]);
-
-    Data.cities = cities;
-    Data.missions = missions;
-    Data.transport = transport;
-    Data.buildings = buildings;
-    Data.staff = staff;
-    Data.factions = factions;
-    Data.events = events;
-    Data.investments = investments;
-
-    validateDataOrThrow();
-    buildIndexes();
-  }
-
-  /* ==============================
-   *  UI SCHEMA (created if missing)
-   * ============================== */
-
-  const UI = {
-    root: null,
-
-    topbar: null,
-    btnWorld: null,
-    btnTown: null,
-    btnSave: null,
-    btnLoad: null,
-    btnReset: null,
-    title: null,
-    time: null,
-    weather: null,
-
-    main: null,
-    worldView: null,
-    townView: null,
-
-    worldMapImg: null,
-    worldMarkers: null,
-
-    townMapImg: null,
-    townMarkers: null,
-
-    sidebar: null,
-    tabButtons: {},
-    tabPanels: {},
-
-    money: null,
-    income: null,
-    alerts: null,
-
-    modalRoot: null,
-    tutorialOverlay: null,
-  };
-
-  function ensureBaseUI() {
-    // If index.html already provides these IDs, we reuse them.
-    // Otherwise, we create a minimal SPA shell dynamically.
-    const existing = qs("#appRoot");
-    if (existing) {
-      UI.root = existing;
-    } else {
-      UI.root = el("div", { id: "appRoot", class: "appRoot" });
-      document.body.appendChild(UI.root);
-    }
-
-    const topbar = qs("#topBar", UI.root) || el("header", { id: "topBar", class: "topBar" });
-    if (!topbar.parentNode) UI.root.appendChild(topbar);
-    UI.topbar = topbar;
-
-    UI.title = qs("#gameTitle", topbar) || el("div", { id: "gameTitle", class: "gameTitle", text: APP.title });
-    if (!UI.title.parentNode) topbar.appendChild(UI.title);
-
-    UI.btnWorld = qs("#btnWorld", topbar) || el("button", { id: "btnWorld", class: "btn", text: "World Map" });
-    UI.btnTown = qs("#btnTown", topbar) || el("button", { id: "btnTown", class: "btn", text: "Town Map" });
-
-    UI.btnSave = qs("#btnSave", topbar) || el("button", { id: "btnSave", class: "btn", text: "Save" });
-    UI.btnLoad = qs("#btnLoad", topbar) || el("button", { id: "btnLoad", class: "btn", text: "Load" });
-    UI.btnReset = qs("#btnReset", topbar) || el("button", { id: "btnReset", class: "btn danger", text: "Reset" });
-
-    UI.time = qs("#timeDisplay", topbar) || el("div", { id: "timeDisplay", class: "hudItem", text: "Day 1 08:00" });
-    UI.weather = qs("#weatherDisplay", topbar) || el("div", { id: "weatherDisplay", class: "hudItem", text: "Weather: —" });
-
-    // Order in topbar
-    const topKids = [UI.btnWorld, UI.btnTown, UI.btnSave, UI.btnLoad, UI.btnReset, UI.time, UI.weather];
-    for (const k of topKids) if (!k.parentNode) topbar.appendChild(k);
-
-    UI.main = qs("#mainArea", UI.root) || el("div", { id: "mainArea", class: "mainArea" });
-    if (!UI.main.parentNode) UI.root.appendChild(UI.main);
-
-    // Left: map area
-    const viewWrap = qs("#viewWrap", UI.main) || el("div", { id: "viewWrap", class: "viewWrap" });
-    if (!viewWrap.parentNode) UI.main.appendChild(viewWrap);
-
-    UI.worldView = qs("#worldView", viewWrap) || el("div", { id: "worldView", class: "view worldView" });
-    UI.townView = qs("#townView", viewWrap) || el("div", { id: "townView", class: "view townView" });
-
-    if (!UI.worldView.parentNode) viewWrap.appendChild(UI.worldView);
-    if (!UI.townView.parentNode) viewWrap.appendChild(UI.townView);
-
-    // World view: image + markers overlay
-    UI.worldMapImg = qs("#worldMapImage", UI.worldView) || el("img", { id: "worldMapImage", class: "mapImage", src: APP.defaultMapImage, alt: "World Map" });
-    UI.worldMarkers = qs("#worldMarkers", UI.worldView) || el("div", { id: "worldMarkers", class: "markerLayer" });
-    if (!UI.worldMapImg.parentNode) UI.worldView.appendChild(UI.worldMapImg);
-    if (!UI.worldMarkers.parentNode) UI.worldView.appendChild(UI.worldMarkers);
-
-    // Town view: image + markers overlay
-    UI.townMapImg = qs("#townMapImage", UI.townView) || el("img", { id: "townMapImage", class: "mapImage", src: APP.defaultTownImage, alt: "Town Map" });
-    UI.townMarkers = qs("#townMarkers", UI.townView) || el("div", { id: "townMarkers", class: "markerLayer" });
-    if (!UI.townMapImg.parentNode) UI.townView.appendChild(UI.townMapImg);
-    if (!UI.townMarkers.parentNode) UI.townView.appendChild(UI.townMarkers);
-
-    // Right: sidebar
-    UI.sidebar = qs("#sidebar", UI.main) || el("aside", { id: "sidebar", class: "sidebar" });
-    if (!UI.sidebar.parentNode) UI.main.appendChild(UI.sidebar);
-
-    const tabs = qs("#tabs", UI.sidebar) || el("div", { id: "tabs", class: "tabs" });
-    if (!tabs.parentNode) UI.sidebar.appendChild(tabs);
-
-    const panels = qs("#tabPanels", UI.sidebar) || el("div", { id: "tabPanels", class: "tabPanels" });
-    if (!panels.parentNode) UI.sidebar.appendChild(panels);
-
-    const tabDefs = [
-      { id: "log", label: "Log" },
-      { id: "missions", label: "Missions" },
-      { id: "staff", label: "Staff" },
-      { id: "investments", label: "Investments" },
-    ];
-
-    for (const t of tabDefs) {
-      const btn = qs(`#tabBtn_${t.id}`, tabs) || el("button", { id: `tabBtn_${t.id}`, class: "tabBtn", text: t.label });
-      const pnl = qs(`#tabPanel_${t.id}`, panels) || el("div", { id: `tabPanel_${t.id}`, class: "tabPanel" });
-
-      if (!btn.parentNode) tabs.appendChild(btn);
-      if (!pnl.parentNode) panels.appendChild(pnl);
-
-      UI.tabButtons[t.id] = btn;
-      UI.tabPanels[t.id] = pnl;
-    }
-
-    // Bottom bar
-    const bottom = qs("#bottomBar", UI.root) || el("footer", { id: "bottomBar", class: "bottomBar" });
-    if (!bottom.parentNode) UI.root.appendChild(bottom);
-
-    UI.money = qs("#moneyDisplay", bottom) || el("div", { id: "moneyDisplay", class: "hudItem", text: "Money: 500 c" });
-    UI.income = qs("#incomeDisplay", bottom) || el("div", { id: "incomeDisplay", class: "hudItem", text: "Income/Upkeep: —" });
-    UI.alerts = qs("#alertsDisplay", bottom) || el("div", { id: "alertsDisplay", class: "hudItem alerts", text: "" });
-
-    for (const k of [UI.money, UI.income, UI.alerts]) if (!k.parentNode) bottom.appendChild(k);
-
-    // Modal root
-    UI.modalRoot = qs("#modalRoot", UI.root) || el("div", { id: "modalRoot", class: "modalRoot" });
-    if (!UI.modalRoot.parentNode) UI.root.appendChild(UI.modalRoot);
-
-    // Tutorial overlay
-    UI.tutorialOverlay = qs("#tutorialOverlay", UI.root) || el("div", { id: "tutorialOverlay", class: "tutorialOverlay hidden" });
-    if (!UI.tutorialOverlay.parentNode) UI.root.appendChild(UI.tutorialOverlay);
-
-    // Wire up buttons
-    UI.btnWorld.addEventListener("click", () => setActiveView("world"));
-    UI.btnTown.addEventListener("click", () => setActiveView("town"));
-    UI.btnSave.addEventListener("click", () => saveGame());
-    UI.btnLoad.addEventListener("click", () => loadGame());
-    UI.btnReset.addEventListener("click", () => resetGame());
-
-    for (const [tabId, btn] of Object.entries(UI.tabButtons)) {
-      btn.addEventListener("click", () => setActiveTab(tabId));
-    }
-  }
-
-  function setActiveView(which) {
-    const w = which === "world";
-    UI.worldView.style.display = w ? "block" : "none";
-    UI.townView.style.display = w ? "none" : "block";
-    UI.btnWorld.classList.toggle("active", w);
-    UI.btnTown.classList.toggle("active", !w);
-    Game.ui.activeView = which;
-    renderAll();
-  }
-
-  function setActiveTab(tabId) {
-    for (const [id, pnl] of Object.entries(UI.tabPanels)) {
-      pnl.style.display = id === tabId ? "block" : "none";
-      UI.tabButtons[id].classList.toggle("active", id === tabId);
-    }
-    Game.ui.activeTab = tabId;
-    renderAll();
-  }
-
-  /* ==============================
-   *  MODALS
-   * ============================== */
-
-  function closeModal() {
-    UI.modalRoot.innerHTML = "";
-    UI.modalRoot.classList.remove("open");
-  }
-
-  function openModal(title, contentNode, actions = []) {
-    UI.modalRoot.innerHTML = "";
-    UI.modalRoot.classList.add("open");
-
-    const overlay = el("div", { class: "modalOverlay", onclick: (e) => { if (e.target === overlay) closeModal(); } });
-    const modal = el("div", { class: "modal" });
-
-    const header = el("div", { class: "modalHeader" }, [
-      el("div", { class: "modalTitle", text: title }),
-      el("button", { class: "btn small", text: "✕", onclick: () => closeModal() }),
-    ]);
-
-    const body = el("div", { class: "modalBody" }, contentNode);
-
-    const footer = el("div", { class: "modalFooter" });
-    for (const a of actions) footer.appendChild(a);
-
-    modal.appendChild(header);
-    modal.appendChild(body);
-    modal.appendChild(footer);
-    overlay.appendChild(modal);
-    UI.modalRoot.appendChild(overlay);
-
-    return { overlay, modal };
-  }
-
-  /* ==============================
-   *  LOGGING
-   * ============================== */
-
-  function logEntry(text, type = "info") {
-    const entry = {
-      id: uid("log"),
-      t: Game.world.time.totalGameMinutes,
-      type,
-      text: String(text),
-    };
-    Game.ui.log.push(entry);
-    if (Game.ui.log.length > APP.maxLogEntries) {
-      Game.ui.log.splice(0, Game.ui.log.length - APP.maxLogEntries);
-    }
-    renderLog();
-  }
-
-  function timeLabelFromMinutes(totalMinutes) {
-    const day = Math.floor(totalMinutes / (24 * 60)) + 1;
-    const minsInDay = totalMinutes % (24 * 60);
-    const hour = Math.floor(minsInDay / 60);
-    const min = minsInDay % 60;
-    return `Day ${day} ${pad2(hour)}:${pad2(min)}`;
-  }
-
-  /* ==============================
-   *  GAME STATE
-   * ============================== */
-
-  const Game = {
-    booted: false,
-    dataReady: false,
-    fatalError: null,
-
-    ui: {
-      activeView: "world",
-      activeTab: "log",
-      log: [],
-      selectedCityId: null,
-      selectedBuildingInstanceId: null,
-      selectedMissionId: null,
+  /* =========================
+     GLOBALS
+  ========================== */
+  const app = {
+    data: {
+      cities: null,
+      missions: null,
+      transport: null,
+      buildings: null,
+      staff: null,
+      factions: null,
+      events: null,
+      investments: null
     },
-
-    // World + Player state (loaded / saved)
-    player: null,
-    world: null,
-    tutorial: null,
-
-    // Runtime-only
-    _lastTickMs: 0,
+    refs: {},
+    state: null,
+    intervalId: null,
+    // ephemeral UI state
+    ui: {
+      view: "world",
+      activeTab: "log",
+      selectedCityId: null,
+      tutorialOverlayOpen: false
+    }
   };
 
-  function makeNewGameState() {
-    // Note: Content NOT hardcoded. We only set starting numeric values & IDs that must exist in JSON.
-    const starterCityId = APP.starterCityId;
+  /* =========================
+     DEFAULT STATE
+  ========================== */
+  function buildDefaultState(data) {
+    // Choose starter HQ city
+    const starter = (data.cities?.cities || []).find(c => c.isStarterHQ) || (data.cities?.cities || [])[0];
+    const starterCityId = starter ? starter.id : "city_dockford";
 
-    const s = {
+    return {
       player: {
         money: 500,
         reputationByCity: {},
         hqs: [starterCityId],
+        // building instances (not catalog)
         ownedBuildings: [
-          // Instances, not templates:
-          // { instanceId, cityId, buildingTemplateId, level, nick, staffIds:[], modules:[] }
-          // For MVP: create a minimal HQ shell using a building template if provided,
-          // else leave empty and Town Map will show an HQ marker regardless.
+          {
+            instanceId: "bld_inst_hq_1",
+            cityId: starterCityId,
+            buildingId: "hq_shell",
+            level: 1
+          }
         ],
         ownedTransports: [],
-        staff: [],
-        activeMissions: [],
-        investments: [],
+        staff: [], // hired staff instances
+        activeMissions: [], // active mission runs
+        completedMissions: {}, // missionId -> true
+        investments: [] // active investments instances
       },
-
       world: {
         time: {
-          totalGameMinutes: 0, // Day 1 00:00
+          day: CONFIG.startDay,
+          hour: CONFIG.startHour,
+          minute: CONFIG.startMinute,
+          totalMinutes: (CONFIG.startDay - 1) * 1440 + CONFIG.startHour * 60 + CONFIG.startMinute
         },
-        weather: {
-          // regionId -> { state, severity, updatedAtMinutes, forecastAccuracyBase }
-          regions: {},
-        },
-        // bookkeeping
-        discoveredCities: [starterCityId],
+        weatherByRegion: {}, // regionId -> { state, updatedAtMinutes }
+        // simple global log
+        log: []
       },
-
       tutorial: {
         step: 0,
-        completed: false,
-        pinnedMissionId: APP.tutorialMissionId,
-      },
+        completed: false
+      }
     };
-
-    // Start at Day 1 08:00 (per bible)
-    s.world.time.totalGameMinutes = 8 * 60;
-
-    // Reputation init
-    for (const c of Data.cities) {
-      s.player.reputationByCity[c.id] = 0;
-    }
-
-    // Seed initial weather for all regions that appear in cities.json
-    const regionIds = new Set();
-    for (const c of Data.cities) {
-      if (c.regionId) regionIds.add(c.regionId);
-    }
-    for (const r of regionIds) {
-      s.world.weather.regions[r] = {
-        state: "Clear",
-        severity: 0.2,
-        updatedAtMinutes: s.world.time.totalGameMinutes,
-        forecastAccuracyBase: 0.5,
-      };
-    }
-
-    return s;
   }
 
-  function adoptGameState(state) {
-    Game.player = state.player;
-    Game.world = state.world;
-    Game.tutorial = state.tutorial;
-
-    // Ensure required keys exist (forward-compat)
-    Game.player.money ??= 500;
-    Game.player.reputationByCity ??= {};
-    Game.player.hqs ??= [APP.starterCityId];
-    Game.player.ownedBuildings ??= [];
-    Game.player.ownedTransports ??= [];
-    Game.player.staff ??= [];
-    Game.player.activeMissions ??= [];
-    Game.player.investments ??= [];
-
-    Game.world.time ??= { totalGameMinutes: 8 * 60 };
-    Game.world.time.totalGameMinutes ??= 8 * 60;
-
-    Game.world.weather ??= { regions: {} };
-    Game.world.weather.regions ??= {};
-    Game.world.discoveredCities ??= [APP.starterCityId];
-
-    Game.tutorial ??= { step: 0, completed: false, pinnedMissionId: APP.tutorialMissionId };
-
-    // If player has no HQ building instance, we still render HQ marker.
+  /* =========================
+     DATA LOADING
+  ========================== */
+  async function fetchJson(url) {
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) throw new Error(`Failed to load ${url} (${res.status})`);
+    return await res.json();
   }
 
-  /* ==============================
-   *  SAVE / LOAD
-   * ============================== */
+  async function loadAllData() {
+    const [cities, missions, transport, buildings, staff, factions, events, investments] =
+      await Promise.all([
+        fetchJson(DATA_FILES.cities),
+        fetchJson(DATA_FILES.missions),
+        fetchJson(DATA_FILES.transport),
+        fetchJson(DATA_FILES.buildings),
+        fetchJson(DATA_FILES.staff),
+        fetchJson(DATA_FILES.factions),
+        fetchJson(DATA_FILES.events),
+        fetchJson(DATA_FILES.investments)
+      ]);
 
+    app.data.cities = cities;
+    app.data.missions = missions;
+    app.data.transport = transport;
+    app.data.buildings = buildings;
+    app.data.staff = staff;
+    app.data.factions = factions;
+    app.data.events = events;
+    app.data.investments = investments;
+  }
+
+  /* =========================
+     LOOKUPS
+  ========================== */
+  function getCity(cityId) {
+    return (app.data.cities?.cities || []).find(c => c.id === cityId) || null;
+  }
+
+  function getRegion(regionId) {
+    return (app.data.cities?.regions || []).find(r => r.id === regionId) || null;
+  }
+
+  function getMission(missionId) {
+    return (app.data.missions?.missions || []).find(m => m.id === missionId) || null;
+  }
+
+  function getTransport(transportId) {
+    return (app.data.transport?.transport || []).find(t => t.id === transportId) || null;
+  }
+
+  function getBuildingCatalog(buildingId) {
+    return (app.data.buildings?.buildings || []).find(b => b.id === buildingId) || null;
+  }
+
+  function getStaffTemplate(staffId) {
+    return (app.data.staff?.templates || []).find(s => s.id === staffId) || null;
+  }
+
+  function getEventDef(eventId) {
+    return (app.data.events?.events || []).find(e => e.id === eventId) || null;
+  }
+
+  function getFaction(factionId) {
+    return (app.data.factions?.factions || []).find(f => f.id === factionId) || null;
+  }
+
+  function getInvestment(invId) {
+    return (app.data.investments?.investments || []).find(i => i.id === invId) || null;
+  }
+
+  function getKnownRoutesBetween(originId, destId) {
+    return (app.data.cities?.knownRoutes || []).filter(r =>
+      r.originCityId === originId && r.destinationCityId === destId
+    );
+  }
+
+  /* =========================
+     WEATHER (simple MVP)
+  ========================== */
+  function initWeatherIfNeeded(state) {
+    const regions = app.data.cities?.regions || [];
+    for (const r of regions) {
+      if (!state.world.weatherByRegion[r.id]) {
+        state.world.weatherByRegion[r.id] = {
+          state: pickWeatherForRegion(r),
+          updatedAtMinutes: state.world.time.totalMinutes
+        };
+      }
+    }
+  }
+
+  function pickWeatherForRegion(region) {
+    // region.weatherBias is an array of favored states
+    const bias = region?.weatherBias || ["clear", "rain", "fog", "storm"];
+    const pick = bias[rngInt(0, bias.length - 1)];
+    return pick || "clear";
+  }
+
+  function maybeAdvanceWeather(state) {
+    // change weather every 6 in-game hours per region (simple)
+    const regions = app.data.cities?.regions || [];
+    const nowM = state.world.time.totalMinutes;
+    for (const r of regions) {
+      const w = state.world.weatherByRegion[r.id];
+      if (!w) continue;
+      if (nowM - w.updatedAtMinutes >= 360) {
+        w.state = pickWeatherForRegion(r);
+        w.updatedAtMinutes = nowM;
+      }
+    }
+  }
+
+  function getWeatherForCity(state, cityId) {
+    const city = getCity(cityId);
+    if (!city) return "clear";
+    const regionId = city.regionId;
+    return state.world.weatherByRegion[regionId]?.state || "clear";
+  }
+
+  /* =========================
+     TIME
+  ========================== */
+  function advanceTime(state, minutesToAdd) {
+    const t = state.world.time;
+    t.totalMinutes += minutesToAdd;
+
+    const total = t.totalMinutes;
+    const day = Math.floor(total / 1440) + 1;
+    const withinDay = total % 1440;
+    const hour = Math.floor(withinDay / 60);
+    const minute = withinDay % 60;
+
+    t.day = day;
+    t.hour = hour;
+    t.minute = minute;
+  }
+
+  /* =========================
+     LOGGING
+  ========================== */
+  function pushLog(state, text, kind = "info") {
+    state.world.log.unshift({
+      id: `log_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+      time: nowStamp(state),
+      kind,
+      text
+    });
+    // cap log size
+    if (state.world.log.length > 200) state.world.log.length = 200;
+    renderActiveTab(); // update log quickly
+  }
+
+  function flashAlert(msg) {
+    const a = app.refs.alertsDisplay;
+    if (!a) return;
+    a.textContent = msg;
+    a.classList.add("flash");
+    setTimeout(() => a.classList.remove("flash"), 700);
+  }
+
+  /* =========================
+     SAVE / LOAD / RESET
+  ========================== */
   function saveGame() {
     try {
-      const payload = {
-        meta: {
-          title: APP.title,
-          version: APP.version,
-          savedAt: new Date().toISOString(),
-        },
-        state: {
-          player: Game.player,
-          world: Game.world,
-          tutorial: Game.tutorial,
-        },
-      };
-      localStorage.setItem(APP.storageKey, JSON.stringify(payload));
-      logEntry("Game saved.", "good");
-      flashAlert("Saved ✓");
+      localStorage.setItem(CONFIG.storageKey, JSON.stringify(app.state));
+      pushLog(app.state, "Game saved.", "good");
+      flashAlert("Saved.");
+      renderAll();
     } catch (e) {
-      logEntry(`Save failed: ${e.message}`, "bad");
-      flashAlert("Save failed");
+      console.error(e);
+      pushLog(app.state, "Save failed.", "bad");
+      flashAlert("Save failed.");
     }
   }
 
   function loadGame() {
     try {
-      const raw = localStorage.getItem(APP.storageKey);
+      const raw = localStorage.getItem(CONFIG.storageKey);
       if (!raw) {
-        logEntry("No saved game found.", "warn");
-        flashAlert("No save found");
+        pushLog(app.state, "No save found.", "warn");
+        flashAlert("No save found.");
         return;
       }
-      const parsed = safeJsonParse(raw);
-      if (!parsed || !parsed.state) throw new Error("Save file is corrupted.");
-      adoptGameState(parsed.state);
-      logEntry("Game loaded.", "good");
-      flashAlert("Loaded ✓");
+      const loaded = JSON.parse(raw);
+      // basic sanity: must have player/world
+      if (!loaded?.player || !loaded?.world) throw new Error("Invalid save.");
+      app.state = loaded;
+      initWeatherIfNeeded(app.state);
+      pushLog(app.state, "Game loaded.", "good");
+      flashAlert("Loaded.");
       renderAll();
     } catch (e) {
-      logEntry(`Load failed: ${e.message}`, "bad");
-      flashAlert("Load failed");
+      console.error(e);
+      pushLog(app.state, "Load failed.", "bad");
+      flashAlert("Load failed.");
     }
   }
 
   function resetGame() {
-    openConfirmModal(
-      "Reset Game",
-      "This will erase your current session (localStorage save remains until overwritten). Proceed?",
-      () => {
-        const fresh = makeNewGameState();
-        adoptGameState(fresh);
-        Game.ui.log = [];
-        logEntry("New game started.", "good");
-        setActiveView("world");
-        setActiveTab("log");
-        renderAll();
-        beginTutorialIfNeeded(true);
-      }
-    );
-  }
-
-  function openConfirmModal(title, message, onYes) {
-    const content = el("div", { class: "confirmBox" }, [
-      el("p", { text: message }),
-    ]);
-    openModal(title, content, [
-      el("button", { class: "btn", text: "Cancel", onclick: () => closeModal() }),
-      el("button", { class: "btn primary", text: "Yes", onclick: () => { closeModal(); onYes(); } }),
-    ]);
-  }
-
-  function flashAlert(text) {
-    if (!UI.alerts) return;
-    UI.alerts.textContent = text;
-    UI.alerts.classList.add("flash");
-    setTimeout(() => UI.alerts.classList.remove("flash"), 700);
-  }
-
-  /* ==============================
-   *  WEATHER MODEL
-   * ============================== */
-
-  const WEATHER_STATES = ["Clear", "Rain", "Storm", "Fog", "Snow"];
-
-  function updateWeatherIfDue() {
-    // Simple model: each region may shift every 6 game hours.
-    // This is algorithmic (allowed), not content.
-    const mins = Game.world.time.totalGameMinutes;
-    const dueEvery = 6 * 60;
-    for (const [regionId, w] of Object.entries(Game.world.weather.regions)) {
-      if (!w) continue;
-      if (mins - (w.updatedAtMinutes || 0) < dueEvery) continue;
-
-      // Drift weather state
-      const roll = rand01();
-      let next = w.state || "Clear";
-      let sev = clamp((w.severity ?? 0.2) + (rand01() - 0.5) * 0.3, 0, 1);
-
-      if (roll < 0.45) {
-        // minor change
-        next = next;
-      } else if (roll < 0.75) {
-        // adjacent-ish change
-        if (next === "Clear") next = pickOne(["Rain", "Fog"]);
-        else if (next === "Rain") next = pickOne(["Clear", "Storm", "Fog"]);
-        else if (next === "Storm") next = pickOne(["Rain", "Fog"]);
-        else if (next === "Fog") next = pickOne(["Clear", "Rain"]);
-        else if (next === "Snow") next = pickOne(["Clear", "Fog"]);
-      } else {
-        // bigger shift
-        next = pickOne(WEATHER_STATES);
-      }
-
-      w.state = next;
-      w.severity = sev;
-      w.updatedAtMinutes = mins;
-    }
-  }
-
-  function getCityWeather(cityId) {
-    const city = Data.cityById.get(cityId);
-    if (!city) return { state: "Clear", severity: 0.2 };
-    const regionId = city.regionId || "region_unknown";
-    const w = Game.world.weather.regions[regionId] || { state: "Clear", severity: 0.2 };
-    return { state: w.state || "Clear", severity: w.severity ?? 0.2 };
-  }
-
-  function weatherModifierForTransport(state, severity, transportId) {
-    // Returns a conditionScore modifier (- to +). Algorithmic.
-    const t = transportId;
-    const sev = clamp(severity ?? 0.2, 0, 1);
-    const base = (s) => {
-      if (s === "Clear") return 5 * (1 - sev);
-      if (s === "Rain") return -10 * sev;
-      if (s === "Storm") return -25 * sev;
-      if (s === "Fog") return -15 * sev;
-      if (s === "Snow") return -20 * sev;
-      return 0;
-    };
-    let m = base(state);
-
-    // Transport sensitivity
-    if (t === "mule") m *= 1.0;
-    else if (t === "train") m *= 0.8;
-    else if (t === "ship") m *= 0.9;
-    else if (t === "plane") m *= 1.2;
-    else if (t === "dirigible") m *= 1.3;
-
-    return Math.round(m);
-  }
-
-  /* ==============================
-   *  MISSIONS + RESOLUTION ENGINE
-   * ============================== */
-
-  function cityDistance(aId, bId) {
-    const a = Data.cityById.get(aId);
-    const b = Data.cityById.get(bId);
-    if (!a || !b) return 1;
-
-    // Recommended schema in cities.json:
-    // mapX/mapY as 0..100 percentages (or 0..1). We handle both.
-    const ax = Number(a.mapX ?? a.x ?? 0.5);
-    const ay = Number(a.mapY ?? a.y ?? 0.5);
-    const bx = Number(b.mapX ?? b.x ?? 0.5);
-    const by = Number(b.mapY ?? b.y ?? 0.5);
-
-    const norm = (v) => (v > 1 ? v / 100 : v);
-    const x1 = norm(ax), y1 = norm(ay), x2 = norm(bx), y2 = norm(by);
-
-    const dx = x2 - x1;
-    const dy = y2 - y1;
-    const d = Math.sqrt(dx * dx + dy * dy);
-
-    // Convert into a convenient "distance units"
-    return d; // 0..~1.5 depending on layout
-  }
-
-  function getKnownRoute(fromId, toId) {
-    return Data.routesByKey.get(`${fromId}|${toId}`) || null;
-  }
-
-  function computeDurationHours(mission, transport) {
-    // Mission baseDurationHours is baseline for the mission
-    // We then adjust by transport speed (relative).
-    const base = Number(mission.baseDurationHours || 8);
-    const speed = Math.max(0.1, Number(transport.speed || 1));
-    // Faster speed => shorter time
-    const adjusted = base / speed;
-
-    // Slight distance influence (keeps demo flexible)
-    const d = cityDistance(mission.originCityId, mission.destinationCityId);
-    // Reference distance around 0.35 (tune based on your city coordinates)
-    const ref = 0.35;
-    const distFactor = clamp(d / ref, 0.7, 1.7);
-
-    return adjusted * distFactor;
-  }
-
-  function computeBaseCosts(mission, transportId, routeMode, selectedServiceIds, assignedStaffIds) {
-    const transport = Data.transportById.get(transportId);
-    if (!transport) return { ok: false, reason: "Unknown transport." };
-
-    const rental = Number(transport.baseRentalCost || 0);
-
-    // Facility fees: if transport requires dock/rail/airfield/hangar
-    const facilityType = APP.transportFacilityTypeMap[transportId] || null;
-    const originFee = facilityType ? computeFacilityFee(mission.originCityId, facilityType) : 0;
-    const destFee = facilityType ? computeFacilityFee(mission.destinationCityId, facilityType) : 0;
-
-    // Route fees (optional)
-    let routeFee = 0;
-    let routeRiskMod = 0;
-
-    if (routeMode === "known") {
-      const r = getKnownRoute(mission.originCityId, mission.destinationCityId);
-      if (r) {
-        routeFee += Number(r.fee || 0);
-        routeRiskMod += Number(r.riskModifier || 0);
-      }
-    } else if (routeMode === "manual") {
-      // Manual route is slightly riskier in MVP (algorithmic)
-      routeRiskMod += 5;
-    } else if (routeMode === "shady") {
-      // Shady route: cheaper but riskier (algorithmic)
-      routeFee -= Math.round(rental * 0.15);
-      routeRiskMod += 12;
-    }
-
-    // Services: loaded from JSON (buildings.json services array recommended)
-    let servicesCost = 0;
-    let servicesBonus = 0;
-    const serviceBreakdown = [];
-    for (const svcId of (selectedServiceIds || [])) {
-      const svc = Data.serviceById.get(svcId);
-      if (!svc) continue;
-      const cost = Number(svc.cost || 0);
-      servicesCost += cost;
-      const bonus = Number(svc.prepBonus || (svc.bonuses?.prepScore || 0) || 0);
-      servicesBonus += bonus;
-      serviceBreakdown.push({ id: svcId, name: svc.name || svcId, cost, bonus });
-    }
-
-    // Staff: modest prep bonus from skills/role match (algorithmic)
-    const staffBonus = computeStaffPrepBonus(assignedStaffIds, transportId);
-
-    const total = Math.max(0, rental + originFee + destFee + routeFee + servicesCost);
-
-    return {
-      ok: true,
-      rental,
-      originFee,
-      destFee,
-      routeFee,
-      servicesCost,
-      servicesBonus,
-      serviceBreakdown,
-      staffBonus,
-      routeRiskMod,
-      total,
-    };
-  }
-
-  function computeFacilityFee(cityId, facilityType) {
-    // If player owns a facility in that city of given type, fee = 0 (owned).
-    // Else, lease fee is determined by matching building templates (buildings.json)
-    // Recommended building schema: { id, type, name, leaseFeePerUse, reliability, ... }
-    const owned = findPlayerBuildingByCityAndType(cityId, facilityType);
-    if (owned) return 0;
-
-    const template = findBuildingTemplateByType(facilityType);
-    if (!template) {
-      // If template missing, we can't compute lease fee safely.
-      // Return a conservative default lease (algorithmic, not content-specific).
-      return 100;
-    }
-    const fee = Number(template.leaseFeePerUse ?? template.leaseFee ?? 100);
-    return Math.max(0, fee);
-  }
-
-  function findBuildingTemplateByType(type) {
-    return (Data.buildings || []).find(b => b && b.type === type) || null;
-  }
-
-  function findPlayerBuildingByCityAndType(cityId, type) {
-    for (const inst of Game.player.ownedBuildings) {
-      const tpl = Data.buildingById.get(inst.buildingTemplateId);
-      if (!tpl) continue;
-      if (inst.cityId === cityId && tpl.type === type) return inst;
-    }
-    return null;
-  }
-
-  function computeFacilityBonus(cityId, facilityType) {
-    // Owned facility → bonus from reliability * level.
-    const owned = findPlayerBuildingByCityAndType(cityId, facilityType);
-    if (!owned) return 0;
-
-    const tpl = Data.buildingById.get(owned.buildingTemplateId);
-    if (!tpl) return 0;
-
-    const rel = clamp(Number(tpl.reliability || 60) / 100, 0, 1);
-    const lvl = Math.max(1, Number(owned.level || tpl.level || 1));
-    // Bonus scale
-    return Math.round(rel * 10 + (lvl - 1) * 3);
-  }
-
-  function computeStaffPrepBonus(staffIds, transportId) {
-    let bonus = 0;
-    const ids = (staffIds || []).filter(Boolean);
-    for (const sid of ids) {
-      const st = Game.player.staff.find(x => x.id === sid);
-      if (!st) continue;
-
-      const skills = st.skills || {};
-      // Relevant skills by transport
-      let relevant = 0;
-      if (transportId === "mule") relevant = (skills.logistics || 0) * 0.12 + (skills.navigation || 0) * 0.08;
-      else if (transportId === "train") relevant = (skills.logistics || 0) * 0.12 + (skills.leadership || 0) * 0.06;
-      else if (transportId === "ship") relevant = (skills.navigation || 0) * 0.12 + (skills.leadership || 0) * 0.06;
-      else if (transportId === "plane") relevant = (skills.navigation || 0) * 0.15 + (skills.forecasting || 0) * 0.05;
-      else if (transportId === "dirigible") relevant = (skills.navigation || 0) * 0.16 + (skills.forecasting || 0) * 0.06;
-
-      // Traits can add small bonus (algorithmic)
-      const traits = st.traits || [];
-      if (traits.includes("Reliable")) relevant += 2.5;
-      if (traits.includes("Reckless")) relevant -= 2.5;
-      if (traits.includes("Insightful")) relevant += 1.5;
-
-      bonus += relevant;
-    }
-    return Math.round(bonus);
-  }
-
-  function mapRiskToEventChance(riskValue) {
-    // riskValue: 0..100 (higher = more risky)
-    // Map to chance: 5%..55%
-    const t = clamp(riskValue / 100, 0, 1);
-    return lerp(0.05, 0.55, t);
-  }
-
-  function computeFactionRiskModifier(mission) {
-    // If factions have territories/regions including the route's region(s),
-    // contribute risk based on strength and attitude.
-    // Recommended factions schema: { territories:[regionId,...], strength, attitudeTowardsPlayer }
-    const origin = Data.cityById.get(mission.originCityId);
-    const dest = Data.cityById.get(mission.destinationCityId);
-    const regionIds = new Set();
-    if (origin?.regionId) regionIds.add(origin.regionId);
-    if (dest?.regionId) regionIds.add(dest.regionId);
-
-    // If mission explicitly includes regions: mission.regionIds or mission.routeRegionIds
-    for (const rid of (mission.regionIds || mission.routeRegionIds || [])) regionIds.add(rid);
-
-    let mod = 0;
-    for (const f of Data.factions) {
-      if (!f || !Array.isArray(f.territories)) continue;
-      const overlap = f.territories.some(r => regionIds.has(r));
-      if (!overlap) continue;
-
-      const strength = clamp(Number(f.strength || 0), 0, 100);
-      const attitude = clamp(Number(f.attitudeTowardsPlayer || 0), -100, 100);
-
-      // Hostile factions increase risk; friendly reduce slightly.
-      const hostility = clamp((-attitude) / 100, 0, 1);
-      mod += Math.round((strength / 100) * 18 * hostility);
-      if (attitude > 30) mod -= 2;
-    }
-    return clamp(mod, -10, 25);
-  }
-
-  function selectRandomEventForMission(missionCtx) {
-    // missionCtx: { categoryHint, weatherState, transportId, riskValue, regionIds:Set, factionIds:Set }
-    // events.json recommended schema:
-    // {
-    //   id, name, category, weight,
-    //   tags: ["weather","bandits"], minRisk, maxRisk,
-    //   allowedTransportTypes: ["mule"...],
-    //   allowedWeatherStates: ["Rain","Storm"],
-    //   regionIds: ["region_..."], factionIds: ["faction_..."],
-    //   effects: { cargoLossPct, delayMinutes, bonusMoney, repDelta, prepDelta },
-    //   narrative: "Short text"
-    // }
-    const events = Data.events || [];
-    const regionIds = missionCtx.regionIds || new Set();
-    const risk = Number(missionCtx.riskValue || 0);
-    const weatherState = missionCtx.weatherState || "Clear";
-    const tId = missionCtx.transportId;
-
-    const candidates = [];
-    for (const e of events) {
-      if (!e) continue;
-
-      const minRisk = Number(e.minRisk ?? 0);
-      const maxRisk = Number(e.maxRisk ?? 100);
-      if (risk < minRisk || risk > maxRisk) continue;
-
-      if (Array.isArray(e.allowedTransportTypes) && !e.allowedTransportTypes.includes(tId)) continue;
-      if (Array.isArray(e.allowedWeatherStates) && !e.allowedWeatherStates.includes(weatherState)) continue;
-
-      if (Array.isArray(e.regionIds) && e.regionIds.length) {
-        const ok = e.regionIds.some(r => regionIds.has(r));
-        if (!ok) continue;
-      }
-
-      // Simple category bias (optional)
-      const cat = e.category || "generic";
-      if (missionCtx.categoryHint && cat !== missionCtx.categoryHint) {
-        // still allowed, but less weight
-      }
-
-      let w = Number(e.weight || 1);
-      if (missionCtx.categoryHint && cat === missionCtx.categoryHint) w *= 1.8;
-
-      candidates.push({ item: e, w });
-    }
-
-    return pickWeighted(candidates);
-  }
-
-  function resolveMission(activeMission) {
-    // activeMission stores planning choices and accumulates events.
-    const mission = Data.missionById.get(activeMission.missionId);
-    const transport = Data.transportById.get(activeMission.transportId);
-    if (!mission || !transport) {
-      return {
-        status: "failed",
-        deliveryFactor: 0,
-        cargoLossPct: 1,
-        moneyDelta: 0,
-        report: "Mission data missing; mission automatically failed.",
-        repDeltas: [],
-      };
-    }
-
-    // Prep Score
-    const baseTransportScore = clamp(100 - Number(transport.baseRisk || 10), 0, 100);
-    const facilityType = APP.transportFacilityTypeMap[activeMission.transportId] || null;
-
-    const originFacilityBonus = facilityType ? computeFacilityBonus(mission.originCityId, facilityType) : 0;
-    const destinationFacilityBonus = facilityType ? computeFacilityBonus(mission.destinationCityId, facilityType) : 0;
-
-    const servicesBonus = Number(activeMission.servicesBonus || 0);
-    const staffBonus = Number(activeMission.staffBonus || 0);
-
-    const prepScore = clamp(
-      Math.round(baseTransportScore * 0.35 + originFacilityBonus + destinationFacilityBonus + servicesBonus + staffBonus),
-      0,
-      100
-    );
-
-    // Condition Score
-    const wOrigin = getCityWeather(mission.originCityId);
-    const wDest = getCityWeather(mission.destinationCityId);
-    const wMod = weatherModifierForTransport(wOrigin.state, wOrigin.severity, activeMission.transportId)
-              + weatherModifierForTransport(wDest.state, wDest.severity, activeMission.transportId);
-    const factionRisk = computeFactionRiskModifier(mission);
-    const routeRiskMod = Number(activeMission.routeRiskMod || 0);
-
-    const conditionScore = clamp(Math.round(wMod - factionRisk - routeRiskMod), -50, 30);
-
-    const combined = clamp(prepScore + conditionScore, 0, 100);
-    const riskValue = 100 - combined;
-
-    // Random roll decides outcome bracket
-    const roll = rand01();
-    // Convert riskValue into a failure pressure
-    const failPressure = clamp(riskValue / 100, 0, 1);
-
-    // Base factors
-    let status = "success";
-    let deliveryFactor = 1.0;
-    let cargoLossPct = 0.0;
-    let delayMinutes = 0;
-
-    // Apply in-transit events effects accumulated during mission
-    const events = activeMission.eventsEncountered || [];
-    let eventMoneyDelta = 0;
-    let eventRepDelta = 0;
-
-    for (const ev of events) {
-      const effects = ev.effects || {};
-      cargoLossPct = clamp(cargoLossPct + (Number(effects.cargoLossPct || 0) / 100), 0, 1);
-      delayMinutes += Number(effects.delayMinutes || 0);
-      eventMoneyDelta += Number(effects.bonusMoney || 0);
-      eventRepDelta += Number(effects.repDelta || 0);
-    }
-
-    // Outcome thresholds (algorithmic)
-    // Higher failPressure => more likely failure/partial/delay
-    const failChance = lerp(0.03, 0.35, failPressure);
-    const partialChance = lerp(0.10, 0.40, failPressure);
-    const delayChance = lerp(0.20, 0.50, failPressure);
-
-    if (roll < failChance) {
-      status = "failed";
-      deliveryFactor = 0.0;
-      cargoLossPct = clamp(Math.max(cargoLossPct, 0.7), 0, 1);
-    } else if (roll < failChance + partialChance) {
-      status = "partial";
-      deliveryFactor = lerp(0.35, 0.75, 1 - failPressure);
-      cargoLossPct = clamp(Math.max(cargoLossPct, lerp(0.15, 0.55, failPressure)), 0, 1);
-    } else if (roll < failChance + partialChance + delayChance) {
-      status = "delayed";
-      deliveryFactor = lerp(0.75, 0.95, 1 - failPressure);
-      delayMinutes += Math.round(lerp(60, 360, failPressure));
-      cargoLossPct = clamp(cargoLossPct + lerp(0.0, 0.15, failPressure), 0, 1);
-    } else {
-      status = "success";
-      deliveryFactor = 1.0 - clamp(cargoLossPct * 0.2, 0, 0.2);
-    }
-
-    // Deadline penalty
-    const deadlineHours = Number(mission.deadlineHours || 0);
-    if (deadlineHours > 0) {
-      const plannedMinutes = activeMission.plannedDurationMinutes || Math.round(Number(mission.baseDurationHours || 8) * 60);
-      const totalMinutes = plannedMinutes + delayMinutes;
-      if (totalMinutes > deadlineHours * 60) {
-        const lateFactor = clamp(1 - ((totalMinutes - deadlineHours * 60) / (deadlineHours * 60)) * 0.5, 0.5, 1);
-        deliveryFactor *= lateFactor;
-        if (status === "success") status = "delayed";
-      }
-    }
-
-    // Final payment
-    const baseReward = Number(mission.baseReward ?? mission.cargo?.baseValue ?? 0);
-    const gross = Math.round(baseReward * deliveryFactor);
-    const net = gross + eventMoneyDelta;
-
-    // Reputation
-    const repDeltas = [];
-    const repChange = Math.round(lerp(2, 8, deliveryFactor) + eventRepDelta);
-    repDeltas.push({ cityId: mission.destinationCityId, delta: repChange });
-
-    // Staff XP
-    awardStaffExperience(activeMission.assignedStaffIds || [], status);
-
-    // Build report string
-    const reportLines = [];
-    reportLines.push(`${mission.name} — ${status.toUpperCase()}`);
-    reportLines.push(`Prep Score: ${prepScore}/100`);
-    reportLines.push(`Condition Score: ${conditionScore}`);
-    reportLines.push(`Risk Value: ${riskValue}/100`);
-    if (delayMinutes > 0) reportLines.push(`Delay: ${Math.round(delayMinutes)} minutes`);
-    if (cargoLossPct > 0) reportLines.push(`Cargo loss: ${Math.round(cargoLossPct * 100)}%`);
-    if (events.length) reportLines.push(`Events: ${events.map(e => e.name || e.id).join(", ")}`);
-
-    return {
-      status,
-      deliveryFactor: clamp(deliveryFactor, 0, 1),
-      cargoLossPct: clamp(cargoLossPct, 0, 1),
-      moneyDelta: net,
-      grossReward: gross,
-      report: reportLines.join("\n"),
-      repDeltas,
-    };
-  }
-
-  function awardStaffExperience(staffIds, missionStatus) {
-    const ids = (staffIds || []).filter(Boolean);
-    const xp = missionStatus === "success" ? 12 : missionStatus === "delayed" ? 9 : missionStatus === "partial" ? 6 : 3;
-    for (const sid of ids) {
-      const st = Game.player.staff.find(s => s.id === sid);
-      if (!st) continue;
-      st.experience = Number(st.experience || 0) + xp;
-      // Minimal leveling effect (algorithmic, optional)
-      if (st.experience > 200 && !st._leveled1) {
-        st._leveled1 = true;
-        // small stat bump
-        if (st.skills) {
-          for (const k of Object.keys(st.skills)) st.skills[k] = Math.round(Number(st.skills[k] || 0) + 2);
-        }
-        logEntry(`${st.name} gained experience and improved skills.`, "good");
-      }
-    }
-  }
-
-  function startMission(planning) {
-    // planning = {
-    //  missionId, transportId, routeMode, selectedServiceIds, assignedStaffIds, costBreakdown, durationMinutes
-    // }
-    const mission = Data.missionById.get(planning.missionId);
-    if (!mission) {
-      logEntry("Cannot start mission: missing mission.", "bad");
-      return false;
-    }
-
-    const totalCost = planning.costBreakdown.total;
-    if (Game.player.money < totalCost) {
-      logEntry("Cannot start mission: insufficient funds.", "warn");
-      return false;
-    }
-
-    Game.player.money -= totalCost;
-
-    const startAt = Game.world.time.totalGameMinutes;
-    const durationMinutes = Math.max(1, Math.round(planning.durationMinutes));
-    const endAt = startAt + durationMinutes;
-
-    const active = {
-      id: uid("activeMission"),
-      missionId: planning.missionId,
-      transportId: planning.transportId,
-      routeMode: planning.routeMode,
-      routeRiskMod: planning.costBreakdown.routeRiskMod || 0,
-      selectedServiceIds: planning.selectedServiceIds || [],
-      servicesBonus: planning.costBreakdown.servicesBonus || 0,
-      staffBonus: planning.costBreakdown.staffBonus || 0,
-      assignedStaffIds: planning.assignedStaffIds || [],
-      costs: deepClone(planning.costBreakdown),
-      startedAtMinutes: startAt,
-      plannedDurationMinutes: durationMinutes,
-      endsAtMinutes: endAt,
-      eventsEncountered: [],
-      lastEventRollAtMinutes: startAt,
-      status: "running",
-      lastLogMilestone: 0,
-    };
-
-    Game.player.activeMissions.push(active);
-
-    logEntry(`Mission started: ${mission.name} (${planning.transportId}). Cost: ${fmtMoney(totalCost)}.`, "good");
-    logEntry(`Departure: ${Data.cityById.get(mission.originCityId)?.name || mission.originCityId}`, "info");
-
-    // Tutorial progression hook
-    tutorialOnMissionStarted(mission.id);
-
+    if (!confirm("Reset the game to a new save?")) return;
+    app.state = buildDefaultState(app.data);
+    initWeatherIfNeeded(app.state);
+    pushLog(app.state, "New game started.", "good");
+    flashAlert("Reset.");
+    closeAllModals();
+    hideTutorialOverlay();
     renderAll();
-    return true;
+    maybeStartTutorial();
   }
 
-  function tickActiveMissions() {
-    const nowMins = Game.world.time.totalGameMinutes;
-    const toComplete = [];
+  /* =========================
+     UI INIT / BINDINGS
+  ========================== */
+  function cacheRefs() {
+    app.refs.btnWorld = $("#btnWorld");
+    app.refs.btnTown = $("#btnTown");
+    app.refs.btnSave = $("#btnSave");
+    app.refs.btnLoad = $("#btnLoad");
+    app.refs.btnReset = $("#btnReset");
 
-    for (const am of Game.player.activeMissions) {
-      if (!am || am.status !== "running") continue;
-      const mission = Data.missionById.get(am.missionId);
-      if (!mission) continue;
+    app.refs.timeDisplay = $("#timeDisplay");
+    app.refs.weatherDisplay = $("#weatherDisplay");
 
-      // Milestone logs
-      const progress = clamp((nowMins - am.startedAtMinutes) / (am.plannedDurationMinutes || 1), 0, 1);
-      const milestone = Math.floor(progress * 4); // 0..4
-      if (milestone > (am.lastLogMilestone || 0)) {
-        am.lastLogMilestone = milestone;
-        if (milestone === 1) logEntry(`En route: ${mission.name} (25%).`, "info");
-        if (milestone === 2) logEntry(`En route: ${mission.name} (50%).`, "info");
-        if (milestone === 3) logEntry(`En route: ${mission.name} (75%).`, "info");
-      }
+    app.refs.worldView = $("#worldView");
+    app.refs.townView = $("#townView");
+    app.refs.worldMarkers = $("#worldMarkers");
+    app.refs.townMarkers = $("#townMarkers");
 
-      // In-transit event roll every ~2 in-game hours
-      const eventEvery = 2 * 60;
-      if (nowMins - (am.lastEventRollAtMinutes || 0) >= eventEvery) {
-        am.lastEventRollAtMinutes = nowMins;
-        maybeTriggerInTransitEvent(am);
-      }
+    app.refs.tabBtn_log = $("#tabBtn_log");
+    app.refs.tabBtn_missions = $("#tabBtn_missions");
+    app.refs.tabBtn_staff = $("#tabBtn_staff");
+    app.refs.tabBtn_investments = $("#tabBtn_investments");
 
-      if (nowMins >= am.endsAtMinutes) {
-        toComplete.push(am);
-      }
-    }
+    app.refs.panel_log = $("#tabPanel_log");
+    app.refs.panel_missions = $("#tabPanel_missions");
+    app.refs.panel_staff = $("#tabPanel_staff");
+    app.refs.panel_investments = $("#tabPanel_investments");
 
-    for (const am of toComplete) {
-      completeMission(am);
-    }
+    app.refs.moneyDisplay = $("#moneyDisplay");
+    app.refs.incomeDisplay = $("#incomeDisplay");
+    app.refs.alertsDisplay = $("#alertsDisplay");
+
+    app.refs.modalRoot = $("#modalRoot");
+    app.refs.tutorialOverlay = $("#tutorialOverlay");
   }
 
-  function maybeTriggerInTransitEvent(activeMission) {
-    const mission = Data.missionById.get(activeMission.missionId);
-    if (!mission) return;
+  function bindUI() {
+    app.refs.btnWorld.addEventListener("click", () => setView("world"));
+    app.refs.btnTown.addEventListener("click", () => setView("town"));
 
-    // Compute a rough live risk snapshot (prep + conditions)
-    const transport = Data.transportById.get(activeMission.transportId);
-    if (!transport) return;
+    app.refs.btnSave.addEventListener("click", saveGame);
+    app.refs.btnLoad.addEventListener("click", loadGame);
+    app.refs.btnReset.addEventListener("click", resetGame);
 
-    const baseTransportScore = clamp(100 - Number(transport.baseRisk || 10), 0, 100);
-    const facilityType = APP.transportFacilityTypeMap[activeMission.transportId] || null;
+    app.refs.tabBtn_log.addEventListener("click", () => setTab("log"));
+    app.refs.tabBtn_missions.addEventListener("click", () => setTab("missions"));
+    app.refs.tabBtn_staff.addEventListener("click", () => setTab("staff"));
+    app.refs.tabBtn_investments.addEventListener("click", () => setTab("investments"));
 
-    const originFacilityBonus = facilityType ? computeFacilityBonus(mission.originCityId, facilityType) : 0;
-    const destinationFacilityBonus = facilityType ? computeFacilityBonus(mission.destinationCityId, facilityType) : 0;
-
-    const prepScore = clamp(
-      Math.round(baseTransportScore * 0.35 + originFacilityBonus + destinationFacilityBonus + Number(activeMission.servicesBonus || 0) + Number(activeMission.staffBonus || 0)),
-      0,
-      100
-    );
-
-    const wOrigin = getCityWeather(mission.originCityId);
-    const wDest = getCityWeather(mission.destinationCityId);
-    const weatherState = (wOrigin.state === wDest.state) ? wOrigin.state : pickOne([wOrigin.state, wDest.state]);
-    const wMod = weatherModifierForTransport(wOrigin.state, wOrigin.severity, activeMission.transportId)
-              + weatherModifierForTransport(wDest.state, wDest.severity, activeMission.transportId);
-
-    const factionRisk = computeFactionRiskModifier(mission);
-    const conditionScore = clamp(Math.round(wMod - factionRisk - Number(activeMission.routeRiskMod || 0)), -50, 30);
-
-    const combined = clamp(prepScore + conditionScore, 0, 100);
-    const riskValue = 100 - combined;
-
-    const chance = mapRiskToEventChance(riskValue);
-    if (rand01() > chance) return;
-
-    const regionIds = new Set();
-    const origin = Data.cityById.get(mission.originCityId);
-    const dest = Data.cityById.get(mission.destinationCityId);
-    if (origin?.regionId) regionIds.add(origin.regionId);
-    if (dest?.regionId) regionIds.add(dest.regionId);
-
-    const ev = selectRandomEventForMission({
-      categoryHint: null,
-      weatherState,
-      transportId: activeMission.transportId,
-      riskValue,
-      regionIds,
-      factionIds: new Set(),
+    // close modal on ESC
+    window.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        // if tutorial open, ignore ESC to avoid breaking steps
+        if (app.ui.tutorialOverlayOpen) return;
+        closeTopModal();
+      }
     });
-
-    if (!ev) return;
-
-    activeMission.eventsEncountered.push(deepClone(ev));
-    logEntry(`Event: ${ev.narrative || ev.name || ev.id}`, ev.category === "lucky" ? "good" : "warn");
   }
 
-  function completeMission(activeMission) {
-    const mission = Data.missionById.get(activeMission.missionId);
-    if (!mission) return;
-
-    const result = resolveMission(activeMission);
-    activeMission.status = "completed";
-    activeMission.result = result;
-    activeMission.completedAtMinutes = Game.world.time.totalGameMinutes;
-
-    // Apply money
-    Game.player.money += result.moneyDelta;
-
-    // Apply reputation
-    for (const rd of (result.repDeltas || [])) {
-      Game.player.reputationByCity[rd.cityId] = Number(Game.player.reputationByCity[rd.cityId] || 0) + Number(rd.delta || 0);
-    }
-
-    // Log report
-    logEntry(`Mission completed: ${mission.name}. Net payout: ${fmtMoney(result.moneyDelta)}.`, result.status === "failed" ? "bad" : "good");
-    logEntry(result.report, "info");
-
-    // Remove from active list
-    Game.player.activeMissions = Game.player.activeMissions.filter(x => x.id !== activeMission.id);
-
-    // Tutorial hook
-    tutorialOnMissionCompleted(mission.id, result);
-
-    // Bankruptcy safety net check
-    maybeTriggerBankruptcySafetyNet();
-
-    renderAll();
-  }
-
-  /* ==============================
-   *  INVESTMENTS
-   * ============================== */
-
-  function getInvestmentOpportunitiesForCity(cityId) {
-    return (Data.investments || []).filter(inv => inv && inv.cityId === cityId && !inv.hidden);
-  }
-
-  function startInvestment(invId) {
-    const inv = Data.investmentById.get(invId);
-    if (!inv) {
-      logEntry("Investment not found.", "warn");
-      return;
-    }
-    const cost = Number(inv.cost || 0);
-    if (Game.player.money < cost) {
-      logEntry(`Can't invest in "${inv.name}": insufficient funds.`, "warn");
-      return;
-    }
-
-    Game.player.money -= cost;
-
-    const start = Game.world.time.totalGameMinutes;
-    const days = Math.max(1, Number(inv.durationDays || 1));
-    const end = start + days * 24 * 60;
-
-    Game.player.investments.push({
-      instanceId: uid("inv"),
-      investmentId: invId,
-      startedAtMinutes: start,
-      endsAtMinutes: end,
-      cost,
-      totalReturn: Number(inv.totalReturn || 0),
-      risk: Number(inv.risk || 0),
-      cityId: inv.cityId,
-      status: "running",
-    });
-
-    logEntry(`Investment started: ${inv.name} (Cost: ${fmtMoney(cost)}).`, "good");
-    renderAll();
-  }
-
-  function tickInvestments() {
-    const nowMins = Game.world.time.totalGameMinutes;
-    const finished = [];
-
-    for (const inst of Game.player.investments) {
-      if (!inst || inst.status !== "running") continue;
-      if (nowMins >= inst.endsAtMinutes) finished.push(inst);
-    }
-
-    for (const inst of finished) {
-      finishInvestment(inst);
-    }
-  }
-
-  function finishInvestment(inst) {
-    const inv = Data.investmentById.get(inst.investmentId);
-    if (!inv) {
-      inst.status = "completed";
-      return;
-    }
-
-    // Simple risk resolution: may reduce payout.
-    const risk = clamp(Number(inv.risk || 0) / 100, 0, 1);
-    const roll = rand01();
-    let payout = Number(inv.totalReturn || 0);
-
-    if (roll < risk * 0.25) {
-      payout = Math.round(payout * 0.4);
-      logEntry(`Investment setback: "${inv.name}" underperformed.`, "warn");
-    } else if (roll < risk * 0.45) {
-      payout = Math.round(payout * 0.75);
-      logEntry(`Investment wobble: "${inv.name}" returned less than expected.`, "warn");
-    } else if (roll > 1 - (0.08 * (1 - risk))) {
-      payout = Math.round(payout * 1.15);
-      logEntry(`Investment bonus: "${inv.name}" exceeded expectations!`, "good");
-    }
-
-    Game.player.money += payout;
-    inst.status = "completed";
-    inst.payout = payout;
-
-    logEntry(`Investment completed: ${inv.name}. Payout: ${fmtMoney(payout)}.`, "good");
-
-    // Remove completed investments to keep UI clean (MVP choice)
-    Game.player.investments = Game.player.investments.filter(x => x.instanceId !== inst.instanceId);
-
-    renderAll();
-  }
-
-  function maybeTriggerBankruptcySafetyNet() {
-    if (Game.player.money >= APP.bankruptcyMoneyThreshold) return;
-    if (Game.player.activeMissions.length > 0) return;
-
-    // If the city has a safety-net tagged investment, surface it.
-    // Recommended investments.json: include at least one entry with tags including "safety_net" and cost <= 100.
-    const cityId = Game.player.hqs[0] || APP.starterCityId;
-    const options = getInvestmentOpportunitiesForCity(cityId);
-    const safety = options.filter(x => (x.tags || []).includes("safety_net"));
-    if (safety.length) {
-      logEntry("Safety net: A small guaranteed opportunity is available in Investments.", "warn");
-      flashAlert("Safety net available");
+  function setView(v) {
+    app.ui.view = v;
+    if (v === "world") {
+      app.refs.worldView.style.display = "";
+      app.refs.townView.style.display = "none";
+      app.refs.btnWorld.classList.add("active");
+      app.refs.btnTown.classList.remove("active");
     } else {
-      logEntry("Safety net needed, but no investments are tagged 'safety_net' in investments.json.", "warn");
+      app.refs.worldView.style.display = "none";
+      app.refs.townView.style.display = "";
+      app.refs.btnWorld.classList.remove("active");
+      app.refs.btnTown.classList.add("active");
     }
+    renderMarkers();
   }
 
-  /* ==============================
-   *  STAFF: HIRING + ASSIGNMENT
-   * ============================== */
-
-  function getHirePoolForCity(cityId) {
-    // staff.json recommended: staff templates may include cityId OR tags/regions.
-    // We'll filter by staff.cityId if present, else allow if no cityId (global).
-    const pool = (Data.staff || []).filter(s => {
-      if (!s) return false;
-      if (s.cityId) return s.cityId === cityId;
-      return true;
-    });
-
-    // Exclude already hired (by id)
-    const hiredIds = new Set(Game.player.staff.map(s => s.id));
-    return pool.filter(s => !hiredIds.has(s.id));
+  function setTab(tab) {
+    app.ui.activeTab = tab;
+    // buttons
+    for (const t of ["log", "missions", "staff", "investments"]) {
+      app.refs[`tabBtn_${t}`].classList.toggle("active", t === tab);
+      app.refs[`panel_${t}`].style.display = (t === tab) ? "" : "none";
+    }
+    renderActiveTab();
   }
 
-  function hireStaff(staffId) {
-    const st = Data.staffById.get(staffId);
-    if (!st) {
-      logEntry("Staff candidate not found.", "warn");
-      return;
-    }
-
-    const salary = Number(st.salary || 0);
-    const hireCost = Number(st.hireCost || 0);
-
-    if (Game.player.money < hireCost) {
-      logEntry(`Can't hire ${st.name}: hire cost is ${fmtMoney(hireCost)}.`, "warn");
-      return;
-    }
-
-    Game.player.money -= hireCost;
-
-    const hired = deepClone(st);
-    hired.assignedBuildingId = null;
-    hired.assignedMissionId = null;
-
-    Game.player.staff.push(hired);
-    logEntry(`Hired staff: ${hired.name} (${hired.role || "staff"}).`, "good");
-
-    renderAll();
-  }
-
-  function unassignStaff(staffId) {
-    const st = Game.player.staff.find(s => s.id === staffId);
-    if (!st) return;
-    st.assignedBuildingId = null;
-    st.assignedMissionId = null;
-    logEntry(`${st.name} is now unassigned.`, "info");
-    renderAll();
-  }
-
-  /* ==============================
-   *  BUILDINGS (MVP upgradeable stub)
-   * ============================== */
-
-  function buildBuilding(cityId, buildingTemplateId) {
-    const tpl = Data.buildingById.get(buildingTemplateId);
-    if (!tpl) {
-      logEntry("Building template not found.", "warn");
-      return;
-    }
-    const cost = Number(tpl.baseCost || 0);
-    if (Game.player.money < cost) {
-      logEntry(`Can't build ${tpl.name}: cost is ${fmtMoney(cost)}.`, "warn");
-      return;
-    }
-    Game.player.money -= cost;
-
-    const inst = {
-      instanceId: uid("bld"),
-      cityId,
-      buildingTemplateId,
-      level: Number(tpl.level || 1),
-      nick: tpl.name,
-      staffIds: [],
-      modules: [],
-    };
-
-    Game.player.ownedBuildings.push(inst);
-    logEntry(`Built: ${tpl.name} in ${Data.cityById.get(cityId)?.name || cityId}.`, "good");
-    renderAll();
-  }
-
-  function upgradeBuilding(instanceId) {
-    const inst = Game.player.ownedBuildings.find(b => b.instanceId === instanceId);
-    if (!inst) return;
-
-    const tpl = Data.buildingById.get(inst.buildingTemplateId);
-    if (!tpl) return;
-
-    const curr = Number(inst.level || 1);
-    const next = curr + 1;
-
-    // buildings.json recommended: upgradeCosts: { "level2": 5000, "level3": 9000 }
-    const key = `level${next}`;
-    const cost = Number(tpl.upgradeCosts?.[key] || 0);
-
-    if (!cost) {
-      logEntry(`${tpl.name} has no upgrade data for ${key}.`, "warn");
-      return;
-    }
-    if (Game.player.money < cost) {
-      logEntry(`Can't upgrade ${tpl.name}: cost is ${fmtMoney(cost)}.`, "warn");
-      return;
-    }
-
-    Game.player.money -= cost;
-    inst.level = next;
-
-    logEntry(`Upgraded ${tpl.name} to Level ${next}.`, "good");
-    renderAll();
-  }
-
-  /* ==============================
-   *  TUTORIAL
-   * ============================== */
-
-  function beginTutorialIfNeeded(force = false) {
-    if (!force && Game.tutorial.completed) return;
-    if (!force && Game.tutorial.step > 0) return;
-
-    showTutorialDialog(
-      "A Letter From Your Uncle",
-      [
-        "You inherited 500 crowns and a tiny HQ shell in Dockford.",
-        "A friend insists there’s easy money in local deliveries… if you fund the mission.",
-        "Let’s start with something unglamorous: pig dung.",
-      ],
-      () => {
-        Game.tutorial.step = 1;
-        renderAll();
-        tutorialPromptSelectMission();
-      }
-    );
-  }
-
-  function showTutorialDialog(title, lines, onNext) {
-    UI.tutorialOverlay.classList.remove("hidden");
-    UI.tutorialOverlay.innerHTML = "";
-
-    const box = el("div", { class: "tutorialBox" }, [
-      el("div", { class: "tutorialTitle", text: title }),
-      el("div", { class: "tutorialBody" }, lines.map(t => el("p", { text: t }))),
-      el("div", { class: "tutorialActions" }, [
-        el("button", { class: "btn primary", text: "Next", onclick: () => {
-          UI.tutorialOverlay.classList.add("hidden");
-          UI.tutorialOverlay.innerHTML = "";
-          if (typeof onNext === "function") onNext();
-        }})
-      ]),
-    ]);
-
-    UI.tutorialOverlay.appendChild(box);
-  }
-
-  function tutorialPromptSelectMission() {
-    setActiveTab("missions");
-    logEntry("Tutorial: In Missions, click the highlighted job to plan it.", "info");
-    flashAlert("Tutorial: Plan mission");
-  }
-
-  function tutorialOnMissionStarted(missionId) {
-    if (Game.tutorial.completed) return;
-    if (missionId !== APP.tutorialMissionId) return;
-
-    if (Game.tutorial.step <= 1) {
-      Game.tutorial.step = 2;
-      logEntry("Tutorial: Mission is running. Watch the Log for updates.", "info");
-      flashAlert("Mission running");
-    }
-  }
-
-  function tutorialOnMissionCompleted(missionId, result) {
-    if (Game.tutorial.completed) return;
-    if (missionId !== APP.tutorialMissionId) return;
-
-    if (Game.tutorial.step <= 2) {
-      Game.tutorial.step = 3;
-
-      showTutorialDialog(
-        "First Profit",
-        [
-          `You finished the run. Outcome: ${result.status.toUpperCase()}.`,
-          `Money changes immediately: reward minus costs, plus any event bonuses.`,
-          "Next: check Investments and Staff to grow beyond mule work.",
-        ],
-        () => {
-          Game.tutorial.completed = true;
-          Game.tutorial.step = 99;
-          logEntry("Tutorial completed. You are free to expand.", "good");
-          flashAlert("Tutorial complete");
-          renderAll();
-        }
-      );
-    }
-  }
-
-  /* ==============================
-   *  RENDERING
-   * ============================== */
-
-  function renderAll() {
-    if (!Game.dataReady) return;
-    renderTopHud();
-    renderWorldMap();
-    renderTownMap();
-    renderMissionsPanel();
-    renderStaffPanel();
-    renderInvestmentsPanel();
-    renderLog();
-    renderBottomHud();
-  }
-
-  function renderTopHud() {
-    UI.title.textContent = `${APP.title} (Demo)`;
-
-    UI.time.textContent = timeLabelFromMinutes(Game.world.time.totalGameMinutes);
-
-    // Weather HUD: shows local (HQ city) weather for free (per bible)
-    const hqCityId = Game.player.hqs[0] || APP.starterCityId;
-    const w = getCityWeather(hqCityId);
-    UI.weather.textContent = `Weather: ${w.state} (${Math.round(clamp(w.severity, 0, 1) * 100)}%)`;
-  }
-
-  function renderBottomHud() {
-    UI.money.textContent = `Money: ${fmtMoney(Game.player.money)}`;
-
-    // MVP: we don’t implement ongoing salaries/upkeep as mandatory,
-    // but we can show a hint if staff have salaries.
-    const salaries = Game.player.staff.reduce((s, st) => s + Number(st.salary || 0), 0);
-    UI.income.textContent = salaries > 0 ? `Staff Salaries (daily est.): ${fmtMoney(salaries)}` : `Income/Upkeep: —`;
-  }
-
-  function clearMarkers(layer) {
-    while (layer.firstChild) layer.removeChild(layer.firstChild);
-  }
-
-  function renderWorldMap() {
-    if (Game.ui.activeView !== "world") return;
-
-    clearMarkers(UI.worldMarkers);
-
-    // City markers
-    for (const c of Data.cities) {
-      const x = Number(c.mapX ?? c.x ?? 0.5);
-      const y = Number(c.mapY ?? c.y ?? 0.5);
-      const norm = (v) => (v > 1 ? v / 100 : v);
-
-      const marker = el("button", {
-        class: "marker cityMarker",
-        title: c.name || c.id,
-        "data-city": c.id,
-        onclick: () => openCityPanel(c.id),
-      }, [
-        el("span", { class: "markerDot" }),
-        el("span", { class: "markerLabel", text: c.name || c.id }),
-      ]);
-
-      marker.style.left = `${clamp(norm(x), 0, 1) * 100}%`;
-      marker.style.top = `${clamp(norm(y), 0, 1) * 100}%`;
-
-      // HQ indicator
-      const isHQ = Game.player.hqs.includes(c.id);
-      if (isHQ) marker.classList.add("hq");
-
-      UI.worldMarkers.appendChild(marker);
-    }
-
-    // Active mission lines (simple)
-    for (const am of Game.player.activeMissions) {
-      const m = Data.missionById.get(am.missionId);
-      if (!m) continue;
-
-      const a = Data.cityById.get(m.originCityId);
-      const b = Data.cityById.get(m.destinationCityId);
-      if (!a || !b) continue;
-
-      // Render as small badge at midpoint (MVP)
-      const ax = Number(a.mapX ?? a.x ?? 0.5), ay = Number(a.mapY ?? a.y ?? 0.5);
-      const bx = Number(b.mapX ?? b.x ?? 0.5), by = Number(b.mapY ?? b.y ?? 0.5);
-      const norm = (v) => (v > 1 ? v / 100 : v);
-
-      const mx = (norm(ax) + norm(bx)) / 2;
-      const my = (norm(ay) + norm(by)) / 2;
-
-      const badge = el("div", { class: "missionBadge", title: m.name }, [
-        el("span", { class: "missionBadgeText", text: "🚚" }),
-      ]);
-
-      badge.style.left = `${clamp(mx, 0, 1) * 100}%`;
-      badge.style.top = `${clamp(my, 0, 1) * 100}%`;
-
-      UI.worldMarkers.appendChild(badge);
-    }
-  }
-
-  function renderTownMap() {
-    if (Game.ui.activeView !== "town") return;
-
-    clearMarkers(UI.townMarkers);
-
-    // Town map is HQ-focused: show HQ marker + owned buildings in that city (MVP: only first HQ city).
-    const cityId = Game.player.hqs[0] || APP.starterCityId;
-    const city = Data.cityById.get(cityId);
-
-    // HQ marker in center (algorithmic placement)
-    const hqMarker = el("button", {
-      class: "marker buildingMarker hq",
-      title: `HQ — ${city?.name || cityId}`,
-      onclick: () => openHQPanel(cityId),
-    }, [
-      el("span", { class: "markerDot" }),
-      el("span", { class: "markerLabel", text: "HQ" }),
-    ]);
-    hqMarker.style.left = `50%`;
-    hqMarker.style.top = `55%`;
-    UI.townMarkers.appendChild(hqMarker);
-
-    // Owned buildings in HQ city
-    const ownedHere = Game.player.ownedBuildings.filter(b => b.cityId === cityId);
-    let i = 0;
-    for (const inst of ownedHere) {
-      const tpl = Data.buildingById.get(inst.buildingTemplateId);
-      if (!tpl) continue;
-      i++;
-
-      const bm = el("button", {
-        class: "marker buildingMarker",
-        title: `${tpl.name} (Lv ${inst.level || 1})`,
-        onclick: () => openBuildingPanel(inst.instanceId),
-      }, [
-        el("span", { class: "markerDot" }),
-        el("span", { class: "markerLabel", text: tpl.name }),
-      ]);
-
-      // Spread around HQ
-      const angle = (i / Math.max(3, ownedHere.length + 1)) * Math.PI * 2;
-      const dx = Math.cos(angle) * 18;
-      const dy = Math.sin(angle) * 12;
-
-      bm.style.left = `calc(50% + ${dx}%)`;
-      bm.style.top = `calc(55% + ${dy}%)`;
-
-      UI.townMarkers.appendChild(bm);
-    }
-
-    // Dummy plots (MVP: 2 plots)
-    for (let p = 0; p < 2; p++) {
-      const plot = el("button", {
-        class: "marker plotMarker",
-        title: "Empty Plot (Build)",
-        onclick: () => openBuildMenu(cityId),
-      }, [
-        el("span", { class: "markerDot" }),
-        el("span", { class: "markerLabel", text: "Empty Plot" }),
-      ]);
-      plot.style.left = p === 0 ? `25%` : `75%`;
-      plot.style.top = p === 0 ? `35%` : `30%`;
-      UI.townMarkers.appendChild(plot);
-    }
-  }
-
-  function renderLog() {
-    const pnl = UI.tabPanels.log;
-    if (!pnl) return;
-    if (Game.ui.activeTab !== "log") return;
-
-    pnl.innerHTML = "";
-    const wrap = el("div", { class: "logList" });
-
-    for (const entry of Game.ui.log.slice().reverse()) {
-      const row = el("div", { class: `logRow ${entry.type || "info"}` }, [
-        el("div", { class: "logTime", text: timeLabelFromMinutes(entry.t) }),
-        el("div", { class: "logText", text: entry.text }),
-      ]);
-      wrap.appendChild(row);
-    }
-
-    if (!Game.ui.log.length) {
-      wrap.appendChild(el("div", { class: "logEmpty", text: "No logs yet." }));
-    }
-
-    pnl.appendChild(wrap);
-  }
-
-  function renderMissionsPanel() {
-    const pnl = UI.tabPanels.missions;
-    if (!pnl) return;
-    if (Game.ui.activeTab !== "missions") return;
-
-    pnl.innerHTML = "";
-
-    // Active missions summary
-    const activeBox = el("div", { class: "panelSection" }, [
-      el("div", { class: "sectionTitle", text: "Active Missions" }),
-    ]);
-
-    if (!Game.player.activeMissions.length) {
-      activeBox.appendChild(el("div", { class: "muted", text: "None running." }));
-    } else {
-      for (const am of Game.player.activeMissions) {
-        const m = Data.missionById.get(am.missionId);
-        if (!m) continue;
-        const now = Game.world.time.totalGameMinutes;
-        const remaining = Math.max(0, am.endsAtMinutes - now);
-        const prog = clamp((now - am.startedAtMinutes) / (am.plannedDurationMinutes || 1), 0, 1);
-
-        activeBox.appendChild(el("div", { class: "card" }, [
-          el("div", { class: "cardTitle", text: m.name }),
-          el("div", { class: "cardLine", text: `Transport: ${am.transportId}` }),
-          el("div", { class: "cardLine", text: `Progress: ${Math.round(prog * 100)}%` }),
-          el("div", { class: "cardLine", text: `ETA: ~${Math.round(remaining)} min` }),
-        ]));
-      }
-    }
-
-    // Available missions in HQ city (MVP)
-    const hqCityId = Game.player.hqs[0] || APP.starterCityId;
-    const available = (Data.missions || []).filter(m => m && m.originCityId === hqCityId);
-
-    const availBox = el("div", { class: "panelSection" }, [
-      el("div", { class: "sectionTitle", text: "Available Missions" }),
-    ]);
-
-    if (!available.length) {
-      availBox.appendChild(el("div", { class: "muted", text: "No missions in this city." }));
-    } else {
-      for (const m of available) {
-        const isTutorialTarget = !Game.tutorial.completed && Game.tutorial.step === 1 && m.id === APP.tutorialMissionId;
-        const btn = el("button", {
-          class: `listItem ${isTutorialTarget ? "highlight" : ""}`,
-          onclick: () => openMissionPlanner(m.id),
-        }, [
-          el("div", { class: "liTitle", text: m.name }),
-          el("div", { class: "liSub", text: `${Data.cityById.get(m.originCityId)?.name || m.originCityId} → ${Data.cityById.get(m.destinationCityId)?.name || m.destinationCityId}` }),
-          el("div", { class: "liMeta", text: `Reward: ${fmtMoney(m.baseReward ?? 0)} • Duration: ${m.baseDurationHours || "?"}h • Diff: ${m.difficulty || 1}` }),
-        ]);
-        availBox.appendChild(btn);
-      }
-    }
-
-    // Quick action
-    const quick = el("div", { class: "panelSection" }, [
-      el("div", { class: "sectionTitle", text: "Quick Actions" }),
-      el("button", { class: "btn", text: "Plan Mission (Pick)", onclick: () => {
-        const m = available[0];
-        if (!m) return;
-        openMissionPlanner(m.id);
-      }}),
-    ]);
-
-    pnl.appendChild(activeBox);
-    pnl.appendChild(availBox);
-    pnl.appendChild(quick);
-  }
-
-  function renderStaffPanel() {
-    const pnl = UI.tabPanels.staff;
-    if (!pnl) return;
-    if (Game.ui.activeTab !== "staff") return;
-
-    pnl.innerHTML = "";
-
-    const hqCityId = Game.player.hqs[0] || APP.starterCityId;
-
-    const hires = getHirePoolForCity(hqCityId);
-
-    const ownedBox = el("div", { class: "panelSection" }, [
-      el("div", { class: "sectionTitle", text: "Your Staff" }),
-    ]);
-
-    if (!Game.player.staff.length) {
-      ownedBox.appendChild(el("div", { class: "muted", text: "No staff hired yet." }));
-    } else {
-      for (const st of Game.player.staff) {
-        const assigned = st.assignedBuildingId ? `Building: ${st.assignedBuildingId}` : st.assignedMissionId ? `Mission: ${st.assignedMissionId}` : "Unassigned";
-        ownedBox.appendChild(el("div", { class: "card" }, [
-          el("div", { class: "cardTitle", text: `${st.name} — ${st.role || "staff"}` }),
-          el("div", { class: "cardLine", text: `XP: ${st.experience || 0} • Loyalty: ${st.loyalty || 0}` }),
-          el("div", { class: "cardLine", text: assigned }),
-          el("div", { class: "cardLine", text: `Traits: ${(st.traits || []).join(", ") || "—"}` }),
-          el("div", { class: "cardActions" }, [
-            el("button", { class: "btn small", text: "Details", onclick: () => openStaffDetails(st.id) }),
-            el("button", { class: "btn small", text: "Unassign", onclick: () => unassignStaff(st.id) }),
-          ]),
-        ]));
-      }
-    }
-
-    const hireBox = el("div", { class: "panelSection" }, [
-      el("div", { class: "sectionTitle", text: `Hire in ${Data.cityById.get(hqCityId)?.name || hqCityId}` }),
-    ]);
-
-    if (!hires.length) {
-      hireBox.appendChild(el("div", { class: "muted", text: "No candidates available right now." }));
-    } else {
-      for (const st of hires.slice(0, 6)) {
-        const hireCost = Number(st.hireCost || 0);
-        const canAfford = Game.player.money >= hireCost;
-        hireBox.appendChild(el("div", { class: "card" }, [
-          el("div", { class: "cardTitle", text: `${st.name} — ${st.role || "staff"}` }),
-          el("div", { class: "cardLine", text: `Hire: ${fmtMoney(hireCost)} • Salary: ${fmtMoney(st.salary || 0)}` }),
-          el("div", { class: "cardLine", text: `Skills: ${formatSkillsLine(st.skills || {})}` }),
-          el("div", { class: "cardActions" }, [
-            el("button", {
-              class: `btn small ${canAfford ? "primary" : ""}`,
-              text: canAfford ? "Hire" : "Can't afford",
-              onclick: () => { if (canAfford) hireStaff(st.id); },
-              title: canAfford ? "" : `Need ${fmtMoney(hireCost)}`
-            }),
-          ]),
-        ]));
-      }
-    }
-
-    pnl.appendChild(ownedBox);
-    pnl.appendChild(hireBox);
-  }
-
-  function formatSkillsLine(skills) {
-    const parts = [];
-    for (const [k, v] of Object.entries(skills || {})) {
-      parts.push(`${k}:${v}`);
-    }
-    return parts.join(" • ") || "—";
-  }
-
-  function renderInvestmentsPanel() {
-    const pnl = UI.tabPanels.investments;
-    if (!pnl) return;
-    if (Game.ui.activeTab !== "investments") return;
-
-    pnl.innerHTML = "";
-
-    const cityId = Game.player.hqs[0] || APP.starterCityId;
-    const cityName = Data.cityById.get(cityId)?.name || cityId;
-
-    const activeBox = el("div", { class: "panelSection" }, [
-      el("div", { class: "sectionTitle", text: "Active Investments" }),
-    ]);
-
-    if (!Game.player.investments.length) {
-      activeBox.appendChild(el("div", { class: "muted", text: "None running." }));
-    } else {
-      for (const inst of Game.player.investments) {
-        const inv = Data.investmentById.get(inst.investmentId);
-        if (!inv) continue;
-        const now = Game.world.time.totalGameMinutes;
-        const remaining = Math.max(0, inst.endsAtMinutes - now);
-        activeBox.appendChild(el("div", { class: "card" }, [
-          el("div", { class: "cardTitle", text: inv.name }),
-          el("div", { class: "cardLine", text: `Expected return: ${fmtMoney(inv.totalReturn || 0)} • Risk: ${inv.risk || 0}` }),
-          el("div", { class: "cardLine", text: `Time left: ~${Math.round(remaining / (24 * 60) * 10) / 10} days` }),
-        ]));
-      }
-    }
-
-    const oppBox = el("div", { class: "panelSection" }, [
-      el("div", { class: "sectionTitle", text: `Opportunities in ${cityName}` }),
-    ]);
-
-    const ops = getInvestmentOpportunitiesForCity(cityId).slice(0, 6);
-
-    if (!ops.length) {
-      oppBox.appendChild(el("div", { class: "muted", text: "No opportunities defined for this city." }));
-    } else {
-      for (const inv of ops) {
-        const canAfford = Game.player.money >= Number(inv.cost || 0);
-        oppBox.appendChild(el("div", { class: "card" }, [
-          el("div", { class: "cardTitle", text: inv.name }),
-          el("div", { class: "cardLine", text: `Cost: ${fmtMoney(inv.cost || 0)} • Return: ${fmtMoney(inv.totalReturn || 0)} • Days: ${inv.durationDays || 1}` }),
-          el("div", { class: "cardLine", text: `Risk: ${inv.risk || 0} • Tags: ${(inv.tags || []).join(", ") || "—"}` }),
-          el("div", { class: "cardActions" }, [
-            el("button", {
-              class: `btn small ${canAfford ? "primary" : ""}`,
-              text: canAfford ? "Invest" : "Can't afford",
-              onclick: () => { if (canAfford) startInvestment(inv.id); },
-            }),
-          ]),
-        ]));
-      }
-    }
-
-    pnl.appendChild(activeBox);
-    pnl.appendChild(oppBox);
-  }
-
-  /* ==============================
-   *  CITY / HQ / BUILDING PANELS
-   * ============================== */
-
-  function openCityPanel(cityId) {
-    const c = Data.cityById.get(cityId);
-    if (!c) return;
-
-    const missionsHere = (Data.missions || []).filter(m => m && (m.originCityId === cityId || m.destinationCityId === cityId));
-    const invHere = getInvestmentOpportunitiesForCity(cityId);
-
-    const content = el("div", { class: "cityPanel" });
-
-    content.appendChild(el("div", { class: "panelLead" }, [
-      el("div", { class: "panelTitleBig", text: c.name || cityId }),
-      el("div", { class: "muted", text: `Region: ${c.regionId || "—"} • Pop: ${c.population || "—"}` }),
-    ]));
-
-    // Missions list (starting from this city)
-    content.appendChild(el("div", { class: "panelSection" }, [
-      el("div", { class: "sectionTitle", text: "Missions" }),
-      ...missionsHere.slice(0, 6).map(m => el("button", {
-        class: "listItem",
-        onclick: () => openMissionPlanner(m.id),
-      }, [
-        el("div", { class: "liTitle", text: m.name }),
-        el("div", { class: "liSub", text: `${Data.cityById.get(m.originCityId)?.name || m.originCityId} → ${Data.cityById.get(m.destinationCityId)?.name || m.destinationCityId}` }),
-      ])),
-    ]));
-
-    // Investments list
-    content.appendChild(el("div", { class: "panelSection" }, [
-      el("div", { class: "sectionTitle", text: "Investments" }),
-      ...(invHere.slice(0, 4).map(inv => el("div", { class: "card" }, [
-        el("div", { class: "cardTitle", text: inv.name }),
-        el("div", { class: "cardLine", text: `Cost: ${fmtMoney(inv.cost || 0)} • Return: ${fmtMoney(inv.totalReturn || 0)}` }),
-      ]))),
-      invHere.length ? null : el("div", { class: "muted", text: "No investments defined here." }),
-    ]));
-
-    openModal(`City: ${c.name || cityId}`, content, [
-      el("button", { class: "btn", text: "Close", onclick: () => closeModal() }),
-    ]);
-  }
-
-  function openHQPanel(cityId) {
-    const city = Data.cityById.get(cityId);
-    const content = el("div", { class: "hqPanel" });
-
-    content.appendChild(el("div", { class: "panelLead" }, [
-      el("div", { class: "panelTitleBig", text: `HQ — ${city?.name || cityId}` }),
-      el("div", { class: "muted", text: "Your headquarters. Buildings here unlock services and reduce risk." }),
-    ]));
-
-    const owned = Game.player.ownedBuildings.filter(b => b.cityId === cityId);
-    content.appendChild(el("div", { class: "panelSection" }, [
-      el("div", { class: "sectionTitle", text: "Owned Buildings" }),
-      ...(owned.length
-        ? owned.map(inst => {
-            const tpl = Data.buildingById.get(inst.buildingTemplateId);
-            if (!tpl) return null;
-            return el("button", { class: "listItem", onclick: () => openBuildingPanel(inst.instanceId) }, [
-              el("div", { class: "liTitle", text: `${tpl.name} (Lv ${inst.level || 1})` }),
-              el("div", { class: "liSub", text: `Type: ${tpl.type}` }),
-            ]);
-          })
-        : [el("div", { class: "muted", text: "None built yet. Click an Empty Plot to build." })]
-      ),
-    ]));
-
-    openModal("Headquarters", content, [
-      el("button", { class: "btn", text: "Build…", onclick: () => { closeModal(); openBuildMenu(cityId); } }),
-      el("button", { class: "btn", text: "Close", onclick: () => closeModal() }),
-    ]);
-  }
-
-  function openBuildMenu(cityId) {
-    const city = Data.cityById.get(cityId);
-
-    // Buildable: any building template with baseCost and not type "service"
-    const buildable = (Data.buildings || []).filter(b => b && b.baseCost != null && b.type !== "service");
-
-    const content = el("div", { class: "buildMenu" }, [
-      el("div", { class: "panelLead" }, [
-        el("div", { class: "panelTitleBig", text: `Build in ${city?.name || cityId}` }),
-        el("div", { class: "muted", text: "Owning infrastructure reduces per-mission fees and risk." }),
-      ]),
-    ]);
-
-    const list = el("div", { class: "panelSection" }, [
-      el("div", { class: "sectionTitle", text: "Available Buildings" }),
-    ]);
-
-    for (const b of buildable.slice(0, 12)) {
-      const canAfford = Game.player.money >= Number(b.baseCost || 0);
-      list.appendChild(el("div", { class: "card" }, [
-        el("div", { class: "cardTitle", text: b.name || b.id }),
-        el("div", { class: "cardLine", text: `Type: ${b.type} • Cost: ${fmtMoney(b.baseCost || 0)} • Reliability: ${b.reliability || "—"}` }),
-        el("div", { class: "cardLine", text: `Lease per use: ${fmtMoney(b.leaseFeePerUse ?? b.leaseFee ?? 0)} • Staff slots: ${b.staffSlots ?? "—"}` }),
-        el("div", { class: "cardActions" }, [
-          el("button", {
-            class: `btn small ${canAfford ? "primary" : ""}`,
-            text: canAfford ? "Build" : "Can't afford",
-            onclick: () => { if (canAfford) { closeModal(); buildBuilding(cityId, b.id); } },
-          }),
-        ]),
-      ]));
-    }
-
-    content.appendChild(list);
-
-    openModal("Build", content, [
-      el("button", { class: "btn", text: "Close", onclick: () => closeModal() }),
-    ]);
-  }
-
-  function openBuildingPanel(instanceId) {
-    const inst = Game.player.ownedBuildings.find(b => b.instanceId === instanceId);
-    if (!inst) return;
-
-    const tpl = Data.buildingById.get(inst.buildingTemplateId);
-    if (!tpl) return;
-
-    const city = Data.cityById.get(inst.cityId);
-
-    const content = el("div", { class: "buildingPanel" });
-
-    content.appendChild(el("div", { class: "panelLead" }, [
-      el("div", { class: "panelTitleBig", text: `${tpl.name} (Lv ${inst.level || 1})` }),
-      el("div", { class: "muted", text: `${city?.name || inst.cityId} • Type: ${tpl.type} • Reliability: ${tpl.reliability || "—"}` }),
-    ]));
-
-    // Upgrade info
-    const curr = Number(inst.level || 1);
-    const next = curr + 1;
-    const key = `level${next}`;
-    const cost = Number(tpl.upgradeCosts?.[key] || 0);
-
-    content.appendChild(el("div", { class: "panelSection" }, [
-      el("div", { class: "sectionTitle", text: "Upgrades" }),
-      cost
-        ? el("div", { class: "card" }, [
-            el("div", { class: "cardTitle", text: `Upgrade to Level ${next}` }),
-            el("div", { class: "cardLine", text: `Cost: ${fmtMoney(cost)}` }),
-            el("div", { class: "cardActions" }, [
-              el("button", {
-                class: `btn small ${Game.player.money >= cost ? "primary" : ""}`,
-                text: Game.player.money >= cost ? "Upgrade" : "Can't afford",
-                onclick: () => { if (Game.player.money >= cost) { closeModal(); upgradeBuilding(instanceId); } },
-              }),
-            ]),
-          ])
-        : el("div", { class: "muted", text: "No further upgrades defined." }),
-    ]));
-
-    openModal("Building", content, [
-      el("button", { class: "btn", text: "Close", onclick: () => closeModal() }),
-    ]);
-  }
-
-  function openStaffDetails(staffId) {
-    const st = Game.player.staff.find(s => s.id === staffId) || Data.staffById.get(staffId);
-    if (!st) return;
-
-    const content = el("div", { class: "staffDetails" });
-
-    content.appendChild(el("div", { class: "panelLead" }, [
-      el("div", { class: "panelTitleBig", text: `${st.name}` }),
-      el("div", { class: "muted", text: `${st.role || "staff"} • XP: ${st.experience || 0} • Loyalty: ${st.loyalty || 0}` }),
-    ]));
-
-    content.appendChild(el("div", { class: "panelSection" }, [
-      el("div", { class: "sectionTitle", text: "Skills" }),
-      el("pre", { class: "codeBlock", text: JSON.stringify(st.skills || {}, null, 2) }),
-    ]));
-
-    content.appendChild(el("div", { class: "panelSection" }, [
-      el("div", { class: "sectionTitle", text: "Traits" }),
-      el("div", { class: "muted", text: (st.traits || []).join(", ") || "—" }),
-    ]));
-
-    if (st.bio) {
-      content.appendChild(el("div", { class: "panelSection" }, [
-        el("div", { class: "sectionTitle", text: "Bio" }),
-        el("div", { class: "muted", text: st.bio }),
-      ]));
-    }
-
-    openModal("Staff", content, [
-      el("button", { class: "btn", text: "Close", onclick: () => closeModal() }),
-    ]);
-  }
-
-  /* ==============================
-   *  MISSION PLANNER UI
-   * ============================== */
-
-  function openMissionPlanner(missionId) {
-    const mission = Data.missionById.get(missionId);
-    if (!mission) return;
-
-    const transportChoices = (mission.allowedTransportTypes || Data.transport.map(t => t.id) || []).map(id => Data.transportById.get(id)).filter(Boolean);
-
-    // Planner state (UI local)
-    const planner = {
-      missionId,
-      transportId: "mule",
-      routeMode: getKnownRoute(mission.originCityId, mission.destinationCityId) ? "known" : "manual",
-      selectedServiceIds: [],
-      assignedStaffIds: [],
-    };
-
-    // Default: if mule exists and is allowed
-    if (transportChoices.some(t => t.id === "mule")) planner.transportId = "mule";
-    else planner.transportId = transportChoices[0]?.id || "mule";
-
-    const content = el("div", { class: "missionPlanner" });
-
-    // Header summary
-    const summary = el("div", { class: "panelLead" }, [
-      el("div", { class: "panelTitleBig", text: mission.name }),
-      el("div", { class: "muted", text: mission.description || "" }),
-      el("div", { class: "muted", text: `${Data.cityById.get(mission.originCityId)?.name || mission.originCityId} → ${Data.cityById.get(mission.destinationCityId)?.name || mission.destinationCityId}` }),
-    ]);
-
-    // Transport selection
-    const transportBox = el("div", { class: "panelSection" }, [
-      el("div", { class: "sectionTitle", text: "1) Choose Transport" }),
-    ]);
-
-    const transportList = el("div", { class: "transportList" });
-
-    for (const t of transportChoices) {
-      const cb = () => {
-        planner.transportId = t.id;
-        repaint();
-      };
-
-      const cost = Number(t.baseRentalCost || 0);
-      const canAfford = Game.player.money >= cost; // minimal check; real check includes fees/services
-      const btn = el("button", {
-        class: `transportCard ${planner.transportId === t.id ? "selected" : ""} ${canAfford ? "" : "locked"}`,
-        onclick: cb,
-        title: canAfford ? "" : `Costs at least ${fmtMoney(cost)} to rent`,
-      }, [
-        el("div", { class: "cardTitle", text: t.name || t.id }),
-        el("div", { class: "cardLine", text: `Rental: ${fmtMoney(cost)} • Speed: ${t.speed || 1} • Capacity: ${t.capacity || "—"} • Base risk: ${t.baseRisk || 0}` }),
-      ]);
-
-      transportList.appendChild(btn);
-    }
-
-    transportBox.appendChild(transportList);
-
-    // Route selection
-    const routeBox = el("div", { class: "panelSection" }, [
-      el("div", { class: "sectionTitle", text: "2) Choose Route" }),
-    ]);
-
-    const hasKnown = !!getKnownRoute(mission.originCityId, mission.destinationCityId);
-
-    const routeBtns = el("div", { class: "routeChoices" }, [
-      el("button", {
-        class: `btn small ${planner.routeMode === "known" ? "primary" : ""}`,
-        text: hasKnown ? "Known Route" : "Known Route (None)",
-        onclick: () => { if (hasKnown) { planner.routeMode = "known"; repaint(); } },
-        disabled: hasKnown ? null : "true",
-        title: hasKnown ? "" : "No known route defined in cities.json routes",
-      }),
-      el("button", {
-        class: `btn small ${planner.routeMode === "manual" ? "primary" : ""}`,
-        text: "Manual Route",
-        onclick: () => { planner.routeMode = "manual"; repaint(); },
-      }),
-      el("button", {
-        class: `btn small ${planner.routeMode === "shady" ? "primary" : ""}`,
-        text: "Shady Route",
-        onclick: () => { planner.routeMode = "shady"; repaint(); },
-        title: "Cheaper but riskier",
-      }),
-    ]);
-
-    routeBox.appendChild(routeBtns);
-    routeBox.appendChild(el("div", { class: "muted", id: "routeHint", text: "" }));
-
-    // Services selection (from JSON services)
-    const servicesBox = el("div", { class: "panelSection" }, [
-      el("div", { class: "sectionTitle", text: "3) Services & Prep" }),
-    ]);
-
-    const servicesList = el("div", { class: "servicesList" });
-    const servicesAvailable = (Data.services || []).slice(0, 8);
-
-    if (!servicesAvailable.length) {
-      servicesBox.appendChild(el("div", { class: "muted", text: "No services defined. (Add top-level 'services' array in buildings.json for Weather Forecast, Cargo Prep, Crew Broker, etc.)" }));
-    } else {
-      for (const svc of servicesAvailable) {
-        const id = svc.id;
-        const cost = Number(svc.cost || 0);
-        const bonus = Number(svc.prepBonus || (svc.bonuses?.prepScore || 0) || 0);
-        const checked = planner.selectedServiceIds.includes(id);
-
-        const row = el("label", { class: "checkRow" }, [
-          el("input", {
-            type: "checkbox",
-            checked: checked ? "true" : null,
-            onchange: (e) => {
-              const on = e.target.checked;
-              if (on && !planner.selectedServiceIds.includes(id)) planner.selectedServiceIds.push(id);
-              if (!on) planner.selectedServiceIds = planner.selectedServiceIds.filter(x => x !== id);
-              repaint();
-            },
-          }),
-          el("span", { class: "checkLabel", text: `${svc.name || id} — Cost: ${fmtMoney(cost)} • Prep: +${bonus}` }),
-        ]);
-        servicesList.appendChild(row);
-      }
-      servicesBox.appendChild(servicesList);
-    }
-
-    // Staff assignment (MVP: pick up to 2 staff)
-    const staffBox = el("div", { class: "panelSection" }, [
-      el("div", { class: "sectionTitle", text: "4) Assign Staff" }),
-    ]);
-
-    const staffHint = el("div", { class: "muted", text: "Assign staff to improve mission odds (logistics/navigation/forecasting)." });
-    staffBox.appendChild(staffHint);
-
-    const staffSelect = el("div", { class: "staffPick" });
-    const staffCandidates = Game.player.staff.slice();
-
-    if (!staffCandidates.length) {
-      staffSelect.appendChild(el("div", { class: "muted", text: "No staff hired. (You can hire in the Staff tab.)" }));
-    } else {
-      for (const st of staffCandidates) {
-        const on = planner.assignedStaffIds.includes(st.id);
-        const row = el("label", { class: "checkRow" }, [
-          el("input", {
-            type: "checkbox",
-            checked: on ? "true" : null,
-            onchange: (e) => {
-              const checked = e.target.checked;
-              if (checked) {
-                if (!planner.assignedStaffIds.includes(st.id)) planner.assignedStaffIds.push(st.id);
-                // cap at 2 for MVP
-                if (planner.assignedStaffIds.length > 2) planner.assignedStaffIds.shift();
-              } else {
-                planner.assignedStaffIds = planner.assignedStaffIds.filter(x => x !== st.id);
-              }
-              repaint();
-            },
-          }),
-          el("span", { class: "checkLabel", text: `${st.name} (${st.role || "staff"}) • ${formatSkillsLine(st.skills || {})}` }),
-        ]);
-        staffSelect.appendChild(row);
-      }
-    }
-
-    staffBox.appendChild(staffSelect);
-
-    // Cost breakdown + confirm
-    const costBox = el("div", { class: "panelSection" }, [
-      el("div", { class: "sectionTitle", text: "5) Cost Breakdown & Confirm" }),
-    ]);
-
-    const breakdownNode = el("div", { id: "breakdownNode", class: "breakdown" });
-    costBox.appendChild(breakdownNode);
-
-    // Paint function
-    const repaint = () => {
-      // Recompute costs
-      const transport = Data.transportById.get(planner.transportId);
-      const durHours = transport ? computeDurationHours(mission, transport) : Number(mission.baseDurationHours || 8);
-      const durMins = Math.round(durHours * 60);
-
-      const costs = computeBaseCosts(
-        mission,
-        planner.transportId,
-        planner.routeMode,
-        planner.selectedServiceIds,
-        planner.assignedStaffIds
-      );
-
-      // Route hint
-      const routeHint = qs("#routeHint", routeBox);
-      if (routeHint) {
-        if (planner.routeMode === "known") routeHint.textContent = "Known route: lower uncertainty (if defined).";
-        else if (planner.routeMode === "manual") routeHint.textContent = "Manual route: moderate uncertainty.";
-        else routeHint.textContent = "Shady route: cheaper, higher bandit/political risk.";
-      }
-
-      // Highlight chosen transport
-      qsa(".transportCard", transportBox).forEach(btn => {
-        const tId = btn.querySelector(".cardTitle")?.textContent;
-        // We set class on creation; easiest is to re-render selection class by data attribute in future,
-        // but for MVP we just re-apply by comparing button text to selected transport name/id.
-        btn.classList.remove("selected");
-      });
-      // We’ll just rebuild transportBox selection states in a simple way:
-      // (Minimal; not perfect, but fine for MVP.)
-      qsa(".transportCard", transportBox).forEach(btn => {
-        const title = btn.querySelector(".cardTitle")?.textContent || "";
-        const selTransport = Data.transportById.get(planner.transportId);
-        if (selTransport && (title === (selTransport.name || selTransport.id))) btn.classList.add("selected");
-      });
-
-      // Render breakdown
-      breakdownNode.innerHTML = "";
-      if (!costs.ok) {
-        breakdownNode.appendChild(el("div", { class: "muted", text: `Error: ${costs.reason}` }));
-        return;
-      }
-
-      const netPossible = Math.round(Number(mission.baseReward || 0) - Number(costs.total || 0));
-
-      breakdownNode.appendChild(el("div", { class: "breakLine", text: `Rental: ${fmtMoney(costs.rental)}` }));
-      breakdownNode.appendChild(el("div", { class: "breakLine", text: `Origin fees: ${fmtMoney(costs.originFee)} • Destination fees: ${fmtMoney(costs.destFee)}` }));
-      breakdownNode.appendChild(el("div", { class: "breakLine", text: `Route fees: ${fmtMoney(costs.routeFee)} • Route risk mod: ${costs.routeRiskMod}` }));
-      breakdownNode.appendChild(el("div", { class: "breakLine", text: `Services: ${fmtMoney(costs.servicesCost)} • Services prep bonus: +${costs.servicesBonus}` }));
-      breakdownNode.appendChild(el("div", { class: "breakLine", text: `Staff prep bonus: +${costs.staffBonus}` }));
-      breakdownNode.appendChild(el("hr", { class: "breakHr" }));
-      breakdownNode.appendChild(el("div", { class: "breakTotal", text: `Total cost now: ${fmtMoney(costs.total)}` }));
-      breakdownNode.appendChild(el("div", { class: "breakLine", text: `Expected duration: ~${Math.round(durMins)} minutes (game minutes)` }));
-      breakdownNode.appendChild(el("div", { class: `breakLine ${netPossible >= 0 ? "good" : "bad"}`, text: `Net (if full success): ${fmtMoney(netPossible)}` }));
-
-      const canAfford = Game.player.money >= costs.total;
-      const confirmBtn = qs("#confirmMissionBtn", content);
-      if (confirmBtn) {
-        confirmBtn.disabled = canAfford ? null : "true";
-        confirmBtn.textContent = canAfford ? "Confirm & Start" : `Need ${fmtMoney(costs.total)}`;
-      }
-
-      // Attach computed values onto planner (used on confirm)
-      planner._costs = costs;
-      planner._durationMinutes = durMins;
-    };
-
-    // Confirm row
-    const confirmRow = el("div", { class: "confirmRow" }, [
-      el("button", { class: "btn", text: "Cancel", onclick: () => closeModal() }),
-      el("button", {
-        class: "btn primary",
-        id: "confirmMissionBtn",
-        text: "Confirm & Start",
-        onclick: () => {
-          const costs = planner._costs;
-          if (!costs?.ok) return;
-          const planning = {
-            missionId: planner.missionId,
-            transportId: planner.transportId,
-            routeMode: planner.routeMode,
-            selectedServiceIds: planner.selectedServiceIds.slice(),
-            assignedStaffIds: planner.assignedStaffIds.slice(),
-            costBreakdown: deepClone(costs),
-            durationMinutes: planner._durationMinutes || Math.round(Number(mission.baseDurationHours || 8) * 60),
-          };
-
-          if (startMission(planning)) closeModal();
-        },
-      }),
-    ]);
-
-    // Assemble
-    content.appendChild(summary);
-    content.appendChild(transportBox);
-    content.appendChild(routeBox);
-    content.appendChild(servicesBox);
-    content.appendChild(staffBox);
-    content.appendChild(costBox);
-    content.appendChild(confirmRow);
-
-    openModal("Mission Planner", content, []);
-    repaint();
-
-    // Tutorial hook
-    if (!Game.tutorial.completed && Game.tutorial.step === 1 && missionId === APP.tutorialMissionId) {
-      logEntry("Tutorial: Choose Mule & Cart and confirm to start.", "info");
-    }
-  }
-
-  /* ==============================
-   *  GAME LOOP
-   * ============================== */
-
-  function advanceTime(deltaMs) {
-    const realSeconds = deltaMs / 1000;
-    const gameMinutesAdvanced = realSeconds * APP.realSecondToGameMinutes * APP.timeRateMultiplier;
-    Game.world.time.totalGameMinutes += gameMinutesAdvanced;
+  /* =========================
+     MAIN LOOP
+  ========================== */
+  function startLoop() {
+    if (app.intervalId) clearInterval(app.intervalId);
+    app.intervalId = setInterval(() => {
+      tick();
+    }, CONFIG.tickMs);
   }
 
   function tick() {
-    const t = nowMs();
-    if (!Game._lastTickMs) Game._lastTickMs = t;
-    const delta = t - Game._lastTickMs;
-    Game._lastTickMs = t;
+    const state = app.state;
 
-    if (!Game.dataReady || Game.fatalError) return;
+    // advance time
+    advanceTime(state, CONFIG.minutesPerSecond);
 
-    advanceTime(delta);
-    updateWeatherIfDue();
-    tickActiveMissions();
-    tickInvestments();
+    // update world systems
+    maybeAdvanceWeather(state);
 
-    // Refresh HUD frequently
-    renderTopHud();
-    renderBottomHud();
+    // update missions + investments
+    updateActiveMissions(state);
+    updateInvestments(state);
+
+    // update HUD + active tab minimal
+    renderHUD();
+
+    // if missions changed, we’ll re-render missions tab on demand
+    if (app.ui.activeTab === "missions") renderMissionsTab();
+    if (app.ui.activeTab === "investments") renderInvestmentsTab();
+
+    // tutorial checks
+    if (!state.tutorial.completed) maybeAdvanceTutorialFromState();
   }
 
-  /* ==============================
-   *  BOOT
-   * ============================== */
-
-  function showFatalError(err) {
-    Game.fatalError = err;
-
-    // Ensure UI exists, then show a blocking modal + log.
-    ensureBaseUI();
-    setActiveTab("log");
-    setActiveView("world");
-
-    Game.ui.log = [];
-    logEntry("FATAL: Game cannot start. Fix the issues below.", "bad");
-    logEntry(String(err?.message || err), "bad");
-
-    const msg = el("div", { class: "fatalBox" }, [
-      el("p", { text: "Game failed to load required JSON data." }),
-      el("p", { class: "muted", text: "Check /data/*.json exists and matches the expected schemas. Then reload." }),
-      el("pre", { class: "codeBlock", text: String(err?.message || err) }),
-    ]);
-
-    openModal("Fatal Error", msg, [
-      el("button", { class: "btn", text: "Close", onclick: () => closeModal() }),
-    ]);
+  /* =========================
+     PLACEHOLDER STUBS (Part 2/3 will fill)
+  ========================== */
+  function renderAll() {
+    renderHUD();
+    renderMarkers();
+    renderActiveTab();
   }
 
+  function renderHUD() { /* implemented in Part 2 */ }
+  function renderMarkers() { /* implemented in Part 2 */ }
+  function renderActiveTab() { /* implemented in Part 2 */ }
+
+  function renderLogTab() { /* implemented in Part 2 */ }
+  function renderMissionsTab() { /* implemented in Part 2 */ }
+  function renderStaffTab() { /* implemented in Part 2 */ }
+  function renderInvestmentsTab() { /* implemented in Part 2 */ }
+
+  function openCityPanel(cityId) { /* implemented in Part 2 */ }
+  function openBuildingPanel(instanceId) { /* implemented in Part 2 */ }
+
+  function openMissionPlanner(missionId, source = "list") { /* implemented in Part 3 */ }
+
+  function updateActiveMissions(state) { /* implemented in Part 3 */ }
+  function updateInvestments(state) { /* implemented in Part 3 */ }
+
+  function closeAllModals() { /* implemented in Part 2 */ }
+  function closeTopModal() { /* implemented in Part 2 */ }
+
+  function showTutorialOverlay(opts) { /* implemented in Part 2 */ }
+  function hideTutorialOverlay() { /* implemented in Part 2 */ }
+  function maybeStartTutorial() { /* implemented in Part 3 */ }
+  function maybeAdvanceTutorialFromState() { /* implemented in Part 3 */ }
+
+  /* =========================
+     BOOT
+  ========================== */
   async function boot() {
-    ensureBaseUI();
-    setActiveView("world");
-    setActiveTab("log");
+    cacheRefs();
 
-    // Loading notice
-    Game.ui.log = [];
-    logEntry("Loading data…", "info");
+    // ensure modalRoot starts closed
+    app.refs.modalRoot.classList.remove("open");
 
     try {
       await loadAllData();
-      Game.dataReady = true;
-      logEntry("Data loaded.", "good");
+    } catch (e) {
+      console.error(e);
+      alert("Failed to load game data JSON. Check /data/ paths and filenames.");
+      return;
+    }
 
-      // New game state (or load auto if exists)
-      const raw = localStorage.getItem(APP.storageKey);
-      if (raw) {
-        const parsed = safeJsonParse(raw);
-        if (parsed?.state) {
-          adoptGameState(parsed.state);
-          logEntry("Loaded existing save from localStorage.", "info");
-        } else {
-          const fresh = makeNewGameState();
-          adoptGameState(fresh);
-          logEntry("Started new game (save was invalid).", "warn");
-        }
-      } else {
-        const fresh = makeNewGameState();
-        adoptGameState(fresh);
-        logEntry("Started new game.", "good");
+    app.state = buildDefaultState(app.data);
+    initWeatherIfNeeded(app.state);
+
+    bindUI();
+    setView("world");
+    setTab("log");
+
+    pushLog(app.state, "You inherit 500 crowns and a tiny warehouse HQ in Dockford.", "good");
+
+    renderAll();
+    startLoop();
+    maybeStartTutorial();
+  }
+
+  window.addEventListener("DOMContentLoaded", boot);
+
+})();
+  /* =========================
+     HUD RENDER
+  ========================== */
+  function renderHUD() {
+    const state = app.state;
+    const t = state.world.time;
+    app.refs.timeDisplay.textContent = `Day ${t.day} ${pad2(t.hour)}:${pad2(t.minute)}`;
+
+    const hqCityId = state.player.hqs[0];
+    const w = getWeatherForCity(state, hqCityId);
+    app.refs.weatherDisplay.textContent = `Weather: ${w}`;
+
+    app.refs.moneyDisplay.textContent = `Money: ${fmtMoney(state.player.money)}`;
+
+    // Simplified income/upkeep for demo: show active investments and salaries
+    const dailySalary = calcDailySalaries(state);
+    const invCount = state.player.investments.length;
+    const activeMissions = state.player.activeMissions.length;
+    app.refs.incomeDisplay.textContent = `Staff Salaries: ${fmtMoney(dailySalary)}/day • Investments: ${invCount} • Active Missions: ${activeMissions}`;
+  }
+
+  function calcDailySalaries(state) {
+    let sum = 0;
+    for (const s of state.player.staff) sum += (s.salaryDaily || 0);
+    return sum;
+  }
+
+  /* =========================
+     MARKERS (World + Town)
+  ========================== */
+  function renderMarkers() {
+    const state = app.state;
+    const worldLayer = app.refs.worldMarkers;
+    const townLayer = app.refs.townMarkers;
+    worldLayer.innerHTML = "";
+    townLayer.innerHTML = "";
+
+    if (app.ui.view === "world") {
+      // City markers
+      for (const c of (app.data.cities?.cities || [])) {
+        const m = makeCityMarker(state, c);
+        worldLayer.appendChild(m);
       }
 
-      // First render
-      renderAll();
+      // Active mission badges near origin (simple)
+      for (const run of state.player.activeMissions) {
+        const mission = getMission(run.missionId);
+        if (!mission) continue;
+        const origin = getCity(mission.originCityId);
+        if (!origin) continue;
 
-      // Tutorial
-      beginTutorialIfNeeded(false);
+        const badge = el("div", "missionBadge");
+        badge.style.left = `${origin.x}%`;
+        badge.style.top = `${origin.y - 4}%`;
 
-      // Start loop
-      Game._lastTickMs = nowMs();
-      setInterval(tick, APP.tickMs);
+        const txt = el("div", "missionBadgeText", "🚚");
+        badge.appendChild(txt);
 
-      Game.booted = true;
+        badge.title = `Active: ${mission.name} (${Math.round(run.progressPct)}%)`;
+        badge.addEventListener("click", () => openActiveMissionReport(run.runId));
 
-    } catch (e) {
-      showFatalError(e);
+        worldLayer.appendChild(badge);
+      }
+
+    } else {
+      // Town markers: show HQ building + a couple plots (simple MVP)
+      const hqCityId = state.player.hqs[0];
+      const hqCity = getCity(hqCityId);
+      if (!hqCity) return;
+
+      // Place HQ near center-left
+      const hqMarker = makeBuildingMarker("HQ", 35, 55, true);
+      hqMarker.addEventListener("click", () => openHQPanel(hqCityId));
+      townLayer.appendChild(hqMarker);
+
+      // Dummy plot markers
+      const plotA = makePlotMarker("Empty Plot", 58, 46);
+      plotA.addEventListener("click", () => openBuildMenu(hqCityId));
+      townLayer.appendChild(plotA);
+
+      const plotB = makePlotMarker("Empty Plot", 62, 64);
+      plotB.addEventListener("click", () => openBuildMenu(hqCityId));
+      townLayer.appendChild(plotB);
+
+      // Existing owned building instances (besides HQ shell) shown as markers (optional)
+      const owned = state.player.ownedBuildings.filter(b => b.cityId === hqCityId && b.buildingId !== "hq_shell");
+      let offset = 0;
+      for (const inst of owned) {
+        const catalog = getBuildingCatalog(inst.buildingId);
+        if (!catalog) continue;
+        // scatter markers a bit
+        const x = 40 + (offset * 6);
+        const y = 34 + (offset * 8);
+        offset++;
+
+        const bm = makeBuildingMarker(catalog.name, x, y, false);
+        bm.addEventListener("click", () => openBuildingPanel(inst.instanceId));
+        townLayer.appendChild(bm);
+      }
     }
   }
 
-  // Start when DOM is ready
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", boot);
-  } else {
-    boot();
+  function makeCityMarker(state, city) {
+    const marker = el("div", "marker cityMarker");
+    marker.style.left = `${city.x}%`;
+    marker.style.top = `${city.y}%`;
+
+    const dot = el("div", "markerDot");
+    const label = el("div", "markerLabel", city.name);
+
+    const isHQ = state.player.hqs.includes(city.id);
+    if (isHQ) marker.classList.add("hq");
+
+    marker.appendChild(dot);
+    marker.appendChild(label);
+
+    marker.title = city.description || city.name;
+    marker.addEventListener("click", () => openCityPanel(city.id));
+
+    return marker;
   }
 
-})();
+  function makeBuildingMarker(name, xPct, yPct, isHQ = false) {
+    const marker = el("div", "marker buildingMarker");
+    marker.style.left = `${xPct}%`;
+    marker.style.top = `${yPct}%`;
+
+    const dot = el("div", "markerDot");
+    const label = el("div", "markerLabel", name);
+
+    if (isHQ) marker.classList.add("hq");
+
+    marker.appendChild(dot);
+    marker.appendChild(label);
+
+    return marker;
+  }
+
+  function makePlotMarker(name, xPct, yPct) {
+    const marker = el("div", "marker plotMarker");
+    marker.style.left = `${xPct}%`;
+    marker.style.top = `${yPct}%`;
+
+    const dot = el("div", "markerDot");
+    const label = el("div", "markerLabel", name);
+
+    marker.appendChild(dot);
+    marker.appendChild(label);
+
+    marker.title = "Build here (demo stub)";
+    return marker;
+  }
+
+  /* =========================
+     TAB RENDERING
+  ========================== */
+  function renderActiveTab() {
+    const t = app.ui.activeTab;
+    if (t === "log") renderLogTab();
+    if (t === "missions") renderMissionsTab();
+    if (t === "staff") renderStaffTab();
+    if (t === "investments") renderInvestmentsTab();
+  }
+
+  function renderLogTab() {
+    const panel = app.refs.panel_log;
+    const state = app.state;
+
+    panel.innerHTML = "";
+
+    const lead = el("div", "panelLead");
+    const title = el("div", "panelTitleBig", "Log");
+    const desc = el("div", "muted", "Mission updates, events, tutorial prompts.");
+    lead.appendChild(title);
+    lead.appendChild(desc);
+    panel.appendChild(lead);
+
+    const list = el("div", "logList");
+    if (state.world.log.length === 0) {
+      list.appendChild(el("div", "logEmpty", "No messages yet."));
+    } else {
+      for (const entry of state.world.log.slice(0, 40)) {
+        const row = el("div", `logRow ${entry.kind || ""}`);
+        const time = el("div", "logTime", entry.time);
+        const text = el("div", "logText", entry.text);
+        row.appendChild(time);
+        row.appendChild(text);
+        list.appendChild(row);
+      }
+    }
+    panel.appendChild(list);
+  }
+
+  function renderMissionsTab() {
+    const panel = app.refs.panel_missions;
+    const state = app.state;
+
+    panel.innerHTML = "";
+
+    const lead = el("div", "panelLead");
+    lead.appendChild(el("div", "panelTitleBig", "Missions"));
+
+    const help = el("div", "muted",
+      "Pick a contract, plan it (transport, route, services, staff), then dispatch. Active missions progress over in-game time."
+    );
+    lead.appendChild(help);
+
+    const actions = el("div", "cardActions");
+    const btnPlan = el("button", "btn primary", "Plan Mission");
+    btnPlan.type = "button";
+    btnPlan.addEventListener("click", () => openMissionPicker());
+    actions.appendChild(btnPlan);
+
+    lead.appendChild(actions);
+    panel.appendChild(lead);
+
+    // Active missions
+    const activeSection = el("div", "panelSection");
+    activeSection.appendChild(el("div", "sectionTitle", "Active Missions"));
+
+    if (state.player.activeMissions.length === 0) {
+      activeSection.appendChild(el("div", "muted", "No active missions."));
+    } else {
+      for (const run of state.player.activeMissions) {
+        const mission = getMission(run.missionId);
+        if (!mission) continue;
+
+        const card = el("div", "card");
+        card.appendChild(el("div", "cardTitle", mission.name));
+        card.appendChild(el("div", "cardLine", `From: ${getCity(mission.originCityId)?.name || "?"} → To: ${getCity(mission.destinationCityId)?.name || "?"}`));
+        card.appendChild(el("div", "cardLine", `Transport: ${getTransport(run.plan.transportId)?.name || run.plan.transportId}`));
+        card.appendChild(el("div", "cardLine", `Progress: ${Math.round(run.progressPct)}%`));
+        card.appendChild(el("div", "cardLine", `ETA: Day ${run.eta.day} ${pad2(run.eta.hour)}:${pad2(run.eta.minute)}`));
+
+        const acts = el("div", "cardActions");
+        const btnView = el("button", "btn small", "View");
+        btnView.type = "button";
+        btnView.addEventListener("click", () => openActiveMissionReport(run.runId));
+        acts.appendChild(btnView);
+
+        card.appendChild(acts);
+        activeSection.appendChild(card);
+      }
+    }
+
+    panel.appendChild(activeSection);
+
+    // Available missions
+    const availSection = el("div", "panelSection");
+    availSection.appendChild(el("div", "sectionTitle", "Available Contracts"));
+
+    const missions = (app.data.missions?.missions || []);
+    for (const m of missions) {
+      // allow re-running; tutorial marks completed but still playable
+      const item = el("button", "listItem");
+      item.type = "button";
+
+      const t = el("div", "liTitle", m.name);
+      const d = el("div", "liSub", m.description);
+      const meta = el("div", "liMeta", `Reward: ${fmtMoney(m.baseReward)} • Difficulty: ${m.difficulty} • Deadline: ${m.deadlineHours}h`);
+
+      item.appendChild(t);
+      item.appendChild(d);
+      item.appendChild(meta);
+
+      // Tutorial highlight
+      if (!state.tutorial.completed && m.tutorial) item.classList.add("highlight");
+
+      item.addEventListener("click", () => openMissionPlanner(m.id, "list"));
+      availSection.appendChild(item);
+    }
+
+    panel.appendChild(availSection);
+  }
+
+  function renderStaffTab() {
+    const panel = app.refs.panel_staff;
+    const state = app.state;
+    panel.innerHTML = "";
+
+    const lead = el("div", "panelLead");
+    lead.appendChild(el("div", "panelTitleBig", "Staff"));
+    lead.appendChild(el("div", "muted", "Hire staff in your HQ city. Assign them during mission planning (MVP)."));
+    panel.appendChild(lead);
+
+    // Owned staff roster
+    const roster = el("div", "panelSection");
+    roster.appendChild(el("div", "sectionTitle", "Your Staff"));
+
+    if (state.player.staff.length === 0) {
+      roster.appendChild(el("div", "muted", "You have no hired staff yet."));
+    } else {
+      for (const s of state.player.staff) {
+        const card = el("div", "card");
+        card.appendChild(el("div", "cardTitle", `${s.name} — ${prettyRole(s.role)}`));
+        card.appendChild(el("div", "cardLine", `Salary: ${fmtMoney(s.salaryDaily)}/day`));
+        card.appendChild(el("div", "cardLine", `Traits: ${(s.traits || []).join(", ") || "None"}`));
+
+        const skills = s.skills || {};
+        card.appendChild(el("div", "cardLine", `Skills: forecasting ${skills.forecasting || 0}, navigation ${skills.navigation || 0}, logistics ${skills.logistics || 0}, security ${skills.security || 0}`));
+
+        const acts = el("div", "cardActions");
+        const btnFire = el("button", "btn small danger", "Dismiss");
+        btnFire.type = "button";
+        btnFire.addEventListener("click", () => dismissStaff(s.instanceId));
+        acts.appendChild(btnFire);
+        card.appendChild(acts);
+
+        roster.appendChild(card);
+      }
+    }
+    panel.appendChild(roster);
+
+    // Hiring pool in HQ city
+    const hire = el("div", "panelSection");
+    hire.appendChild(el("div", "sectionTitle", "Hire in Current HQ"));
+
+    const hqCityId = state.player.hqs[0];
+    const hqCity = getCity(hqCityId);
+    hire.appendChild(el("div", "muted", `Recruitment board in ${hqCity?.name || "HQ"}.`));
+
+    const pool = getHirePoolForCity(hqCityId);
+    if (pool.length === 0) {
+      hire.appendChild(el("div", "muted", "No candidates available here right now."));
+    } else {
+      for (const tpl of pool) {
+        const already = state.player.staff.some(s => s.templateId === tpl.id);
+        const card = el("div", "card");
+        card.appendChild(el("div", "cardTitle", `${tpl.name} — ${prettyRole(tpl.role)}`));
+        card.appendChild(el("div", "cardLine", `Salary: ${fmtMoney(tpl.salaryDaily)}/day`));
+        card.appendChild(el("div", "cardLine", `Traits: ${(tpl.traits || []).join(", ") || "None"}`));
+
+        const skills = tpl.skills || {};
+        card.appendChild(el("div", "cardLine", `Skills: forecasting ${skills.forecasting || 0}, navigation ${skills.navigation || 0}, logistics ${skills.logistics || 0}, security ${skills.security || 0}`));
+
+        const acts = el("div", "cardActions");
+        const btnHire = el("button", "btn small primary", already ? "Hired" : "Hire");
+        btnHire.type = "button";
+        btnHire.disabled = already;
+        btnHire.addEventListener("click", () => hireStaff(tpl.id, hqCityId));
+        acts.appendChild(btnHire);
+
+        card.appendChild(acts);
+        hire.appendChild(card);
+      }
+    }
+
+    panel.appendChild(hire);
+  }
+
+  function renderInvestmentsTab() {
+    const panel = app.refs.panel_investments;
+    const state = app.state;
+    panel.innerHTML = "";
+
+    const lead = el("div", "panelLead");
+    lead.appendChild(el("div", "panelTitleBig", "Investments"));
+    lead.appendChild(el("div", "muted", "Fund local projects for passive returns. (MVP: payouts occur at end of duration.)"));
+    panel.appendChild(lead);
+
+    // Active investments
+    const active = el("div", "panelSection");
+    active.appendChild(el("div", "sectionTitle", "Active Investments"));
+
+    if (state.player.investments.length === 0) {
+      active.appendChild(el("div", "muted", "No active investments."));
+    } else {
+      for (const inst of state.player.investments) {
+        const inv = getInvestment(inst.invId);
+        if (!inv) continue;
+        const card = el("div", "card");
+        card.appendChild(el("div", "cardTitle", inv.name));
+        card.appendChild(el("div", "cardLine", `Cost: ${fmtMoney(inv.cost)} • Total Return: ${fmtMoney(inv.totalReturn)} • Risk: ${inv.risk}`));
+        card.appendChild(el("div", "cardLine", `Matures: Day ${inst.maturesAt.day} ${pad2(inst.maturesAt.hour)}:${pad2(inst.maturesAt.minute)}`));
+        panel.appendChild(card);
+      }
+    }
+    panel.appendChild(active);
+
+    // Opportunities (HQ city)
+    const opp = el("div", "panelSection");
+    opp.appendChild(el("div", "sectionTitle", "Opportunities (HQ City)"));
+
+    const hqCityId = state.player.hqs[0];
+    const opps = (app.data.investments?.investments || []).filter(i => i.cityId === hqCityId);
+
+    if (opps.length === 0) {
+      opp.appendChild(el("div", "muted", "No opportunities available here."));
+    } else {
+      for (const inv of opps) {
+        const card = el("div", "card");
+        card.appendChild(el("div", "cardTitle", inv.name));
+        card.appendChild(el("div", "cardLine", inv.description || ""));
+        card.appendChild(el("div", "cardLine", `Cost: ${fmtMoney(inv.cost)} • Total Return: ${fmtMoney(inv.totalReturn)} • Duration: ${inv.durationDays} days • Risk: ${inv.risk}`));
+
+        const acts = el("div", "cardActions");
+        const btn = el("button", "btn small primary", "Fund");
+        btn.type = "button";
+        btn.disabled = app.state.player.money < inv.cost;
+        btn.addEventListener("click", () => startInvestment(inv.id));
+        acts.appendChild(btn);
+
+        card.appendChild(acts);
+        opp.appendChild(card);
+      }
+    }
+    panel.appendChild(opp);
+  }
+
+  function prettyRole(role) {
+    const map = {
+      meteorologist: "Meteorologist",
+      logistics: "Logistics",
+      dockWorker: "Dock Worker",
+      captain: "Captain",
+      security: "Security"
+    };
+    return map[role] || (role ? role[0].toUpperCase() + role.slice(1) : "Staff");
+  }
+
+  /* =========================
+     CITY PANEL (World click)
+  ========================== */
+  function openCityPanel(cityId) {
+    const city = getCity(cityId);
+    if (!city) return;
+
+    const state = app.state;
+    app.ui.selectedCityId = cityId;
+
+    const body = el("div");
+    const lead = el("div", "panelLead");
+    lead.appendChild(el("div", "panelTitleBig", city.name));
+    lead.appendChild(el("div", "muted", city.description || ""));
+    body.appendChild(lead);
+
+    const w = getWeatherForCity(state, cityId);
+    const weatherCard = el("div", "card");
+    weatherCard.appendChild(el("div", "cardTitle", "Local Weather"));
+    weatherCard.appendChild(el("div", "cardLine", `Current: ${w}`));
+
+    const acts = el("div", "cardActions");
+    const btnForecast = el("button", "btn small", `Buy Forecast (${fmtMoney(CONFIG.services.forecast.cost)})`);
+    btnForecast.type = "button";
+    btnForecast.disabled = state.player.money < CONFIG.services.forecast.cost;
+    btnForecast.addEventListener("click", () => {
+      buyForecast(cityId);
+    });
+    acts.appendChild(btnForecast);
+    weatherCard.appendChild(acts);
+
+    body.appendChild(weatherCard);
+
+    // Mission shortcuts from city
+    const mCard = el("div", "card");
+    mCard.appendChild(el("div", "cardTitle", "Contracts From Here"));
+    const list = (app.data.missions?.missions || []).filter(m => m.originCityId === cityId);
+    if (list.length === 0) {
+      mCard.appendChild(el("div", "muted", "No contracts originate here in the demo."));
+    } else {
+      for (const m of list) {
+        const b = el("button", "btn small primary", `Plan: ${m.name}`);
+        b.type = "button";
+        b.addEventListener("click", () => openMissionPlanner(m.id, "city"));
+        mCard.appendChild(b);
+      }
+    }
+    body.appendChild(mCard);
+
+    // Basic faction note
+    const factionCard = el("div", "card");
+    factionCard.appendChild(el("div", "cardTitle", "Factions"));
+    const factions = (app.data.factions?.factions || []).filter(f => (f.territories || []).includes(city.regionId));
+    if (factions.length === 0) {
+      factionCard.appendChild(el("div", "muted", "No major factions noted here (demo)."));
+    } else {
+      for (const f of factions) {
+        factionCard.appendChild(el("div", "cardLine", `${f.name} (${f.type}) — attitude ${f.attitudeTowardsPlayer}`));
+      }
+    }
+    body.appendChild(factionCard);
+
+    openModal({
+      title: `City: ${city.name}`,
+      bodyEl: body,
+      footerButtons: [
+        { label: "Close", className: "btn", onClick: closeTopModal }
+      ]
+    });
+  }
+
+  function buyForecast(cityId) {
+    const state = app.state;
+    const cost = CONFIG.services.forecast.cost;
+    if (state.player.money < cost) return;
+
+    state.player.money -= cost;
+
+    const city = getCity(cityId);
+    const region = getRegion(city?.regionId);
+    const bias = region?.weatherBias || ["clear", "rain", "fog", "storm"];
+    // create a “forecast” list (approximate)
+    const forecast = [];
+    for (let i = 0; i < 3; i++) {
+      forecast.push(bias[rngInt(0, bias.length - 1)]);
+    }
+
+    pushLog(state, `Forecast purchased for ${city?.name || "city"}: Next 3 days → ${forecast.join(", ")}.`, "good");
+    flashAlert("Forecast received.");
+    renderHUD();
+    renderActiveTab();
+  }
+
+  /* =========================
+     TOWN PANELS (MVP stubs)
+  ========================== */
+  function openHQPanel(cityId) {
+    const city = getCity(cityId);
+    const state = app.state;
+
+    const body = el("div");
+
+    const lead = el("div", "panelLead");
+    lead.appendChild(el("div", "panelTitleBig", `${city?.name || "HQ"} — Headquarters`));
+    lead.appendChild(el("div", "muted", "Your tiny warehouse HQ. Upgrade and build more facilities later."));
+    body.appendChild(lead);
+
+    const card = el("div", "card");
+    card.appendChild(el("div", "cardTitle", "HQ Actions"));
+    const acts = el("div", "cardActions");
+
+    const btnPlan = el("button", "btn small primary", "Plan Mission");
+    btnPlan.type = "button";
+    btnPlan.addEventListener("click", () => openMissionPicker());
+    acts.appendChild(btnPlan);
+
+    const btnHire = el("button", "btn small", "Staff Board");
+    btnHire.type = "button";
+    btnHire.addEventListener("click", () => {
+      setTab("staff");
+      closeTopModal();
+    });
+    acts.appendChild(btnHire);
+
+    const btnInv = el("button", "btn small", "Investments");
+    btnInv.type = "button";
+    btnInv.addEventListener("click", () => {
+      setTab("investments");
+      closeTopModal();
+    });
+    acts.appendChild(btnInv);
+
+    card.appendChild(acts);
+    body.appendChild(card);
+
+    openModal({
+      title: "HQ",
+      bodyEl: body,
+      footerButtons: [
+        { label: "Close", className: "btn", onClick: closeTopModal }
+      ]
+    });
+  }
+
+  function openBuildMenu(cityId) {
+    const state = app.state;
+    const body = el("div");
+
+    const lead = el("div", "panelLead");
+    lead.appendChild(el("div", "panelTitleBig", "Build Facility (Demo Stub)"));
+    lead.appendChild(el("div", "muted", "You can add a facility instance to your HQ city. Effects are minimal in MVP."));
+    body.appendChild(lead);
+
+    const list = el("div", "transportList");
+    const options = (app.data.buildings?.buildings || []).filter(b => b.id !== "hq_shell");
+    for (const b of options) {
+      const card = el("button", "transportCard");
+      card.type = "button";
+      card.appendChild(el("div", "liTitle", b.name));
+      card.appendChild(el("div", "liSub", `Cost: ${fmtMoney(b.baseCost)} • Slots: ${b.staffSlots} • Reliability: ${b.reliability}`));
+
+      const affordable = state.player.money >= b.baseCost;
+      if (!affordable) card.classList.add("locked");
+
+      card.disabled = !affordable;
+      card.addEventListener("click", () => {
+        buyBuilding(cityId, b.id);
+        closeTopModal();
+      });
+
+      list.appendChild(card);
+    }
+
+    body.appendChild(list);
+
+    openModal({
+      title: "Construction",
+      bodyEl: body,
+      footerButtons: [
+        { label: "Close", className: "btn", onClick: closeTopModal }
+      ]
+    });
+  }
+
+  function buyBuilding(cityId, buildingId) {
+    const state = app.state;
+    const cat = getBuildingCatalog(buildingId);
+    if (!cat) return;
+    if (state.player.money < cat.baseCost) return;
+
+    state.player.money -= cat.baseCost;
+
+    const inst = {
+      instanceId: `bld_inst_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+      cityId,
+      buildingId,
+      level: 1
+    };
+    state.player.ownedBuildings.push(inst);
+
+    pushLog(state, `Built: ${cat.name} in ${getCity(cityId)?.name || "HQ city"}.`, "good");
+    flashAlert("Facility built.");
+    renderHUD();
+    renderMarkers();
+    renderActiveTab();
+  }
+
+  function openBuildingPanel(instanceId) {
+    const state = app.state;
+    const inst = state.player.ownedBuildings.find(b => b.instanceId === instanceId);
+    if (!inst) return;
+    const cat = getBuildingCatalog(inst.buildingId);
+    const city = getCity(inst.cityId);
+
+    const body = el("div");
+
+    const lead = el("div", "panelLead");
+    lead.appendChild(el("div", "panelTitleBig", `${cat?.name || inst.buildingId}`));
+    lead.appendChild(el("div", "muted", `Location: ${city?.name || "?"} • Level ${inst.level}`));
+    body.appendChild(lead);
+
+    const card = el("div", "card");
+    card.appendChild(el("div", "cardTitle", "Status"));
+    card.appendChild(el("div", "cardLine", `Reliability: ${cat?.reliability || 0}`));
+    card.appendChild(el("div", "cardLine", `Staff Slots: ${cat?.staffSlots || 0}`));
+    card.appendChild(el("div", "cardLine", `Features: ${(cat?.features || []).join(", ") || "None"}`));
+    body.appendChild(card);
+
+    // Upgrade (basic)
+    const upCard = el("div", "card");
+    upCard.appendChild(el("div", "cardTitle", "Upgrade"));
+    const nextKey = `level${inst.level + 1}`;
+    const cost = cat?.upgradeCosts?.[nextKey];
+    if (!cost) {
+      upCard.appendChild(el("div", "muted", "No upgrades available (demo)."));
+    } else {
+      upCard.appendChild(el("div", "cardLine", `Next upgrade cost: ${fmtMoney(cost)}`));
+      const acts = el("div", "cardActions");
+      const btn = el("button", "btn small primary", "Upgrade");
+      btn.type = "button";
+      btn.disabled = app.state.player.money < cost;
+      btn.addEventListener("click", () => {
+        upgradeBuilding(instanceId);
+        closeTopModal();
+      });
+      acts.appendChild(btn);
+      upCard.appendChild(acts);
+    }
+    body.appendChild(upCard);
+
+    openModal({
+      title: "Building",
+      bodyEl: body,
+      footerButtons: [
+        { label: "Close", className: "btn", onClick: closeTopModal }
+      ]
+    });
+  }
+
+  function upgradeBuilding(instanceId) {
+    const state = app.state;
+    const inst = state.player.ownedBuildings.find(b => b.instanceId === instanceId);
+    if (!inst) return;
+    const cat = getBuildingCatalog(inst.buildingId);
+    if (!cat) return;
+    const nextKey = `level${inst.level + 1}`;
+    const cost = cat.upgradeCosts?.[nextKey];
+    if (!cost) return;
+    if (state.player.money < cost) return;
+
+    state.player.money -= cost;
+    inst.level += 1;
+
+    pushLog(state, `Upgraded ${cat.name} to Level ${inst.level}.`, "good");
+    flashAlert("Upgraded.");
+    renderHUD();
+    renderMarkers();
+    renderActiveTab();
+  }
+
+  /* =========================
+     STAFF: Hire / Dismiss
+  ========================== */
+  function getHirePoolForCity(cityId) {
+    return (app.data.staff?.templates || []).filter(tpl =>
+      (tpl.availabilityCityIds || []).includes(cityId)
+    );
+  }
+
+  function hireStaff(templateId, cityId) {
+    const state = app.state;
+    const tpl = getStaffTemplate(templateId);
+    if (!tpl) return;
+
+    // Already hired?
+    if (state.player.staff.some(s => s.templateId === templateId)) return;
+
+    // Hiring fee? (MVP: none) — you start paying daily salary implicitly
+    const inst = deepClone(tpl);
+    inst.instanceId = `staff_inst_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    inst.templateId = tpl.id;
+    inst.hiredAtCityId = cityId;
+    inst.assignedBuildingId = null;
+    inst.assignedMissionRunId = null;
+
+    state.player.staff.push(inst);
+
+    pushLog(state, `Hired ${tpl.name} (${prettyRole(tpl.role)}).`, "good");
+    flashAlert("Staff hired.");
+    renderHUD();
+    renderStaffTab();
+  }
+
+  function dismissStaff(instanceId) {
+    const state = app.state;
+    const idx = state.player.staff.findIndex(s => s.instanceId === instanceId);
+    if (idx === -1) return;
+
+    const s = state.player.staff[idx];
+
+    // Prevent dismissal if currently assigned to an active mission run
+    const assigned = state.player.activeMissions.some(r =>
+      (r.plan?.assignedStaffInstanceIds || []).includes(instanceId)
+    );
+    if (assigned) {
+      pushLog(state, `${s.name} is currently assigned to an active mission and cannot be dismissed.`, "warn");
+      flashAlert("Assigned to mission.");
+      return;
+    }
+
+    if (!confirm(`Dismiss ${s.name}?`)) return;
+
+    state.player.staff.splice(idx, 1);
+    pushLog(state, `Dismissed ${s.name}.`, "warn");
+    flashAlert("Dismissed.");
+    renderHUD();
+    renderStaffTab();
+  }
+
+  /* =========================
+     INVESTMENTS: start (matures handled in Part 3)
+  ========================== */
+  function startInvestment(invId) {
+    const state = app.state;
+    const inv = getInvestment(invId);
+    if (!inv) return;
+    if (state.player.money < inv.cost) return;
+
+    state.player.money -= inv.cost;
+
+    const nowM = state.world.time.totalMinutes;
+    const durationMins = (inv.durationDays || 1) * 1440;
+    const matureAt = minutesToClock(nowM + durationMins);
+
+    const inst = {
+      instanceId: `inv_inst_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+      invId: inv.id,
+      startedAtMinutes: nowM,
+      maturesAtMinutes: nowM + durationMins,
+      maturesAt: matureAt
+    };
+
+    state.player.investments.push(inst);
+    pushLog(state, `Funded investment: ${inv.name} (matures Day ${matureAt.day}).`, "good");
+    flashAlert("Investment started.");
+    renderHUD();
+    renderInvestmentsTab();
+  }
+
+  function minutesToClock(totalMinutes) {
+    const day = Math.floor(totalMinutes / 1440) + 1;
+    const within = totalMinutes % 1440;
+    const hour = Math.floor(within / 60);
+    const minute = within % 60;
+    return { day, hour, minute };
+  }
+
+  /* =========================
+     MISSION PICKER (quick modal)
+  ========================== */
+  function openMissionPicker() {
+    const body = el("div");
+    body.appendChild(el("div", "muted", "Select a mission to plan."));
+
+    const list = el("div", "transportList");
+    for (const m of (app.data.missions?.missions || [])) {
+      const card = el("button", "transportCard");
+      card.type = "button";
+      card.appendChild(el("div", "liTitle", m.name));
+      card.appendChild(el("div", "liSub", m.description));
+      card.appendChild(el("div", "liMeta", `Reward: ${fmtMoney(m.baseReward)} • Difficulty: ${m.difficulty}`));
+      card.addEventListener("click", () => {
+        closeTopModal();
+        openMissionPlanner(m.id, "picker");
+      });
+      list.appendChild(card);
+    }
+
+    body.appendChild(list);
+
+    openModal({
+      title: "Plan a Mission",
+      bodyEl: body,
+      footerButtons: [
+        { label: "Close", className: "btn", onClick: closeTopModal }
+      ]
+    });
+  }
+
+  /* =========================
+     ACTIVE MISSION REPORT (simple)
+  ========================== */
+  function openActiveMissionReport(runId) {
+    const state = app.state;
+    const run = state.player.activeMissions.find(r => r.runId === runId);
+    if (!run) return;
+
+    const mission = getMission(run.missionId);
+    const body = el("div");
+
+    const lead = el("div", "panelLead");
+    lead.appendChild(el("div", "panelTitleBig", mission?.name || "Mission"));
+    lead.appendChild(el("div", "muted", `Progress: ${Math.round(run.progressPct)}%`));
+    body.appendChild(lead);
+
+    const plan = run.plan || {};
+
+    const card = el("div", "card");
+    card.appendChild(el("div", "cardTitle", "Details"));
+    card.appendChild(el("div", "cardLine", `Transport: ${getTransport(plan.transportId)?.name || plan.transportId}`));
+    card.appendChild(el("div", "cardLine", `Route: ${plan.routeName || "Manual"}`));
+    card.appendChild(el("div", "cardLine", `Departed: Day ${run.departedAt.day} ${pad2(run.departedAt.hour)}:${pad2(run.departedAt.minute)}`));
+    card.appendChild(el("div", "cardLine", `ETA: Day ${run.eta.day} ${pad2(run.eta.hour)}:${pad2(run.eta.minute)}`));
+    body.appendChild(card);
+
+    const ev = el("div", "card");
+    ev.appendChild(el("div", "cardTitle", "En-route Log"));
+    if (!run.travelLog || run.travelLog.length === 0) {
+      ev.appendChild(el("div", "muted", "No incidents yet."));
+    } else {
+      const pre = el("pre", "codeBlock");
+      pre.textContent = run.travelLog.slice(-12).join("\n");
+      ev.appendChild(pre);
+    }
+    body.appendChild(ev);
+
+    openModal({
+      title: "Active Mission",
+      bodyEl: body,
+      footerButtons: [
+        { label: "Close", className: "btn", onClick: closeTopModal }
+      ]
+    });
+  }
+
+  /* =========================
+     MODALS
+  ========================== */
+  function openModal({ title, bodyEl, footerButtons }) {
+    const root = app.refs.modalRoot;
+    root.classList.add("open");
+
+    const overlay = el("div", "modalOverlay");
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay && !app.ui.tutorialOverlayOpen) closeTopModal();
+    });
+
+    const modal = el("div", "modal");
+
+    const header = el("div", "modalHeader");
+    header.appendChild(el("div", "modalTitle", title || "Modal"));
+    const btnX = el("button", "btn small", "✕");
+    btnX.type = "button";
+    btnX.addEventListener("click", () => {
+      if (app.ui.tutorialOverlayOpen) return;
+      closeTopModal();
+    });
+    header.appendChild(btnX);
+
+    const body = el("div", "modalBody");
+    if (bodyEl) body.appendChild(bodyEl);
+
+    const footer = el("div", "modalFooter");
+    (footerButtons || []).forEach(b => {
+      const btn = el("button", b.className || "btn", b.label || "OK");
+      btn.type = "button";
+      btn.addEventListener("click", b.onClick || closeTopModal);
+      footer.appendChild(btn);
+    });
+
+    modal.appendChild(header);
+    modal.appendChild(body);
+    modal.appendChild(footer);
+
+    overlay.appendChild(modal);
+    root.appendChild(overlay);
+  }
+
+  function closeTopModal() {
+    const root = app.refs.modalRoot;
+    const overlays = $$(".modalOverlay", root);
+    if (overlays.length === 0) return;
+    const top = overlays[overlays.length - 1];
+    top.remove();
+    if ($$(".modalOverlay", root).length === 0) {
+      root.classList.remove("open");
+    }
+  }
+
+  function closeAllModals() {
+    const root = app.refs.modalRoot;
+    root.innerHTML = "";
+    root.classList.remove("open");
+  }
+
+  /* =========================
+     TUTORIAL OVERLAY (simple)
+  ========================== */
+  function showTutorialOverlay({ title, paragraphs, buttonLabel = "Next", onNext }) {
+    const overlay = app.refs.tutorialOverlay;
+    overlay.innerHTML = "";
+    overlay.classList.remove("hidden");
+    app.ui.tutorialOverlayOpen = true;
+
+    const box = el("div", "tutorialBox");
+    box.appendChild(el("div", "tutorialTitle", title || "Tutorial"));
+
+    const body = el("div", "tutorialBody");
+    (paragraphs || []).forEach(p => {
+      const para = document.createElement("p");
+      para.textContent = p;
+      body.appendChild(para);
+    });
+
+    const actions = el("div", "tutorialActions");
+    const btn = el("button", "btn primary", buttonLabel);
+    btn.type = "button";
+    btn.addEventListener("click", () => {
+      if (typeof onNext === "function") onNext();
+    });
+    actions.appendChild(btn);
+
+    box.appendChild(body);
+    box.appendChild(actions);
+
+    overlay.appendChild(box);
+  }
+
+  function hideTutorialOverlay() {
+    const overlay = app.refs.tutorialOverlay;
+    overlay.classList.add("hidden");
+    overlay.innerHTML = "";
+    app.ui.tutorialOverlayOpen = false;
+  }
+  /* =========================
+     MISSION PLANNER + DISPATCH
+  ========================== */
+
+  function openMissionPlanner(missionId, source = "list") {
+    const state = app.state;
+    const mission = getMission(missionId);
+    if (!mission) return;
+
+    const origin = getCity(mission.originCityId);
+    const dest = getCity(mission.destinationCityId);
+
+    // Tutorial detection: opening planner advances tutorial step
+    if (!state.tutorial.completed && mission.tutorial && state.tutorial.step <= 1) {
+      state.tutorial.step = 2;
+      showTutorialOverlay({
+        title: "Plan the Mission",
+        paragraphs: [
+          "Now choose your transport, route, and any preparation services.",
+          "Then dispatch the mission to begin travel."
+        ],
+        buttonLabel: "Got it",
+        onNext: () => hideTutorialOverlay()
+      });
+    }
+
+    // Planner draft state
+    const draft = {
+      missionId,
+      transportId: null,
+      routeMode: "known", // known | shady | manual
+      routeId: null,
+      routeName: null,
+      services: { forecast: false, cargoPrep: false, crewBroker: false },
+      suppliesKey: "none",
+      assignedStaffInstanceIds: []
+    };
+
+    // Preselect: mule if exists
+    const mule = getTransport("mule");
+    if (mule) draft.transportId = "mule";
+
+    // Known routes
+    const knownRoutes = getKnownRoutesBetween(mission.originCityId, mission.destinationCityId);
+
+    // If there are known routes, default to the first "Main" route if possible
+    if (knownRoutes.length > 0) {
+      const main = knownRoutes.find(r => /main/i.test(r.name)) || knownRoutes[0];
+      draft.routeId = main.id;
+      draft.routeName = main.name;
+      draft.routeMode = /shady/i.test(main.name) ? "shady" : "known";
+    } else {
+      draft.routeMode = "manual";
+      draft.routeId = null;
+      draft.routeName = "Manual Route";
+    }
+
+    // Build UI
+    const body = el("div");
+
+    const lead = el("div", "panelLead");
+    lead.appendChild(el("div", "panelTitleBig", mission.name));
+    lead.appendChild(el("div", "muted", mission.description));
+    lead.appendChild(el("div", "muted", `From: ${origin?.name || "?"} → To: ${dest?.name || "?"}`));
+    body.appendChild(lead);
+
+    // Transport selection
+    const transportSection = el("div", "panelSection");
+    transportSection.appendChild(el("div", "sectionTitle", "1) Choose Transport"));
+
+    const transportList = el("div", "transportList");
+    for (const t of (app.data.transport?.transport || [])) {
+      const card = el("button", "transportCard");
+      card.type = "button";
+
+      const affordable = state.player.money >= t.baseRentalCost;
+      if (!affordable) card.classList.add("locked");
+      if (draft.transportId === t.id) card.classList.add("selected");
+
+      const distanceKm = estimateDistanceKm(origin, dest);
+      const dur = estimateMissionDurationHours(mission, t, distanceKm, draft.routeMode, draft.routeId);
+
+      card.appendChild(el("div", "liTitle", t.name));
+      card.appendChild(el("div", "liSub", `Rental: ${fmtMoney(t.baseRentalCost)} • Speed: ${t.speed} • Risk: ${t.baseRisk}`));
+      card.appendChild(el("div", "liMeta", `Estimated travel time: ~${Math.round(dur)}h in-game`));
+
+      card.addEventListener("click", () => {
+        draft.transportId = t.id;
+        // rerender selection styling
+        for (const c of $$(".transportCard", body)) c.classList.remove("selected");
+        card.classList.add("selected");
+        updateBreakdown();
+      });
+
+      transportList.appendChild(card);
+    }
+    transportSection.appendChild(transportList);
+    body.appendChild(transportSection);
+
+    // Route selection
+    const routeSection = el("div", "panelSection");
+    routeSection.appendChild(el("div", "sectionTitle", "2) Choose Route"));
+
+    const routeChoices = el("div", "routeChoices");
+
+    const btnKnown = el("button", `btn small ${draft.routeMode === "known" ? "primary" : ""}`, "Known Route");
+    btnKnown.type = "button";
+    btnKnown.addEventListener("click", () => {
+      draft.routeMode = "known";
+      selectRouteForMode();
+      syncRouteButtons();
+      updateBreakdown();
+    });
+
+    const btnShady = el("button", `btn small ${draft.routeMode === "shady" ? "primary" : ""}`, "Shady Route");
+    btnShady.type = "button";
+    btnShady.addEventListener("click", () => {
+      draft.routeMode = "shady";
+      selectRouteForMode();
+      syncRouteButtons();
+      updateBreakdown();
+    });
+
+    const btnManual = el("button", `btn small ${draft.routeMode === "manual" ? "primary" : ""}`, "Manual");
+    btnManual.type = "button";
+    btnManual.addEventListener("click", () => {
+      draft.routeMode = "manual";
+      draft.routeId = null;
+      draft.routeName = "Manual Route";
+      syncRouteButtons();
+      updateBreakdown();
+    });
+
+    routeChoices.appendChild(btnKnown);
+    routeChoices.appendChild(btnShady);
+    routeChoices.appendChild(btnManual);
+    routeSection.appendChild(routeChoices);
+
+    const routeInfo = el("div", "muted", "");
+    routeSection.appendChild(routeInfo);
+
+    function syncRouteButtons() {
+      btnKnown.classList.toggle("primary", draft.routeMode === "known");
+      btnShady.classList.toggle("primary", draft.routeMode === "shady");
+      btnManual.classList.toggle("primary", draft.routeMode === "manual");
+
+      const selectedRoute = getSelectedRoute();
+      if (draft.routeMode === "manual") {
+        routeInfo.textContent = "Manual route: basic risk and duration (MVP).";
+      } else if (selectedRoute) {
+        routeInfo.textContent = `${selectedRoute.name}: ${selectedRoute.notes || ""}`;
+      } else {
+        routeInfo.textContent = "No route data available. Using manual defaults.";
+      }
+    }
+
+    function getSelectedRoute() {
+      if (!draft.routeId) return null;
+      return knownRoutes.find(r => r.id === draft.routeId) || null;
+    }
+
+    function selectRouteForMode() {
+      if (knownRoutes.length === 0) {
+        draft.routeMode = "manual";
+        draft.routeId = null;
+        draft.routeName = "Manual Route";
+        return;
+      }
+      const matches = knownRoutes.filter(r => (draft.routeMode === "shady" ? /shady/i.test(r.name) : !/shady/i.test(r.name)));
+      const pick = matches[0] || knownRoutes[0];
+      draft.routeId = pick.id;
+      draft.routeName = pick.name;
+    }
+
+    syncRouteButtons();
+    body.appendChild(routeSection);
+
+    // Services
+    const servicesSection = el("div", "panelSection");
+    servicesSection.appendChild(el("div", "sectionTitle", "3) Services & Preparation"));
+
+    const servicesList = el("div", "servicesList");
+
+    servicesList.appendChild(makeServiceRow("forecast", "Weather Forecast", CONFIG.services.forecast.cost, () => updateBreakdown()));
+    servicesList.appendChild(makeServiceRow("cargoPrep", "Cargo Prep Service", CONFIG.services.cargoPrep.cost, () => updateBreakdown()));
+    servicesList.appendChild(makeServiceRow("crewBroker", "Crew Broker", CONFIG.services.crewBroker.cost, () => updateBreakdown()));
+
+    servicesSection.appendChild(servicesList);
+    body.appendChild(servicesSection);
+
+    function makeServiceRow(key, label, cost, onChange) {
+      const row = el("label", "checkRow");
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = !!draft.services[key];
+      cb.addEventListener("change", () => {
+        draft.services[key] = cb.checked;
+        onChange();
+      });
+
+      const txt = el("div", "checkLabel", `${label} (${fmtMoney(cost)})`);
+      row.appendChild(cb);
+      row.appendChild(txt);
+      return row;
+    }
+
+    // Supplies (stocking)
+    const suppliesSection = el("div", "panelSection");
+    suppliesSection.appendChild(el("div", "sectionTitle", "4) Supplies (Stocking)"));
+
+    const suppliesWrap = el("div", "servicesList");
+    for (const key of Object.keys(CONFIG.supplies)) {
+      const s = CONFIG.supplies[key];
+      const row = el("label", "checkRow");
+      const rb = document.createElement("input");
+      rb.type = "radio";
+      rb.name = "supplies";
+      rb.checked = (draft.suppliesKey === key);
+      rb.addEventListener("change", () => {
+        draft.suppliesKey = key;
+        updateBreakdown();
+      });
+      row.appendChild(rb);
+      row.appendChild(el("div", "checkLabel", `${s.name} (${fmtMoney(s.cost)})`));
+      suppliesWrap.appendChild(row);
+    }
+    suppliesSection.appendChild(suppliesWrap);
+    body.appendChild(suppliesSection);
+
+    // Staff assignment
+    const staffSection = el("div", "panelSection");
+    staffSection.appendChild(el("div", "sectionTitle", "5) Assign Staff (Optional)"));
+
+    const staffPick = el("div", "staffPick");
+    if (state.player.staff.length === 0) {
+      staffPick.appendChild(el("div", "muted", "You have no staff. Hire from the Staff tab to improve outcomes."));
+    } else {
+      for (const s of state.player.staff) {
+        const row = el("label", "checkRow");
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = draft.assignedStaffInstanceIds.includes(s.instanceId);
+
+        cb.addEventListener("change", () => {
+          const on = cb.checked;
+          if (on) {
+            if (!draft.assignedStaffInstanceIds.includes(s.instanceId)) draft.assignedStaffInstanceIds.push(s.instanceId);
+          } else {
+            draft.assignedStaffInstanceIds = draft.assignedStaffInstanceIds.filter(id => id !== s.instanceId);
+          }
+          updateBreakdown();
+        });
+
+        row.appendChild(cb);
+        row.appendChild(el("div", "checkLabel", `${s.name} — ${prettyRole(s.role)}`));
+        staffPick.appendChild(row);
+      }
+    }
+    staffSection.appendChild(staffPick);
+    body.appendChild(staffSection);
+
+    // Breakdown + confirm
+    const breakdownSection = el("div", "panelSection");
+    breakdownSection.appendChild(el("div", "sectionTitle", "6) Cost & Outcome Preview"));
+
+    const breakdown = el("div", "breakdown");
+    breakdownSection.appendChild(breakdown);
+
+    const confirmRow = el("div", "confirmRow");
+    const btnCancel = el("button", "btn", "Cancel");
+    btnCancel.type = "button";
+    btnCancel.addEventListener("click", closeTopModal);
+
+    const btnDispatch = el("button", "btn primary", "Confirm & Dispatch");
+    btnDispatch.type = "button";
+
+    confirmRow.appendChild(btnCancel);
+    confirmRow.appendChild(btnDispatch);
+
+    breakdownSection.appendChild(confirmRow);
+    body.appendChild(breakdownSection);
+
+    btnDispatch.addEventListener("click", () => {
+      const plan = finalizePlan();
+      if (!plan) return;
+
+      const ok = dispatchMission(plan);
+      if (!ok) return;
+
+      closeTopModal();
+      setTab("missions");
+      renderMarkers();
+    });
+
+    function finalizePlan() {
+      const t = getTransport(draft.transportId);
+      if (!t) return null;
+
+      const distanceKm = estimateDistanceKm(origin, dest);
+      const durationHours = estimateMissionDurationHours(mission, t, distanceKm, draft.routeMode, draft.routeId);
+      const durationMinutes = Math.max(1, Math.round(durationHours * 60));
+
+      const costs = calcMissionCosts(state, mission, draft, t);
+
+      // Can't afford?
+      if (state.player.money < costs.totalCost) {
+        pushLog(state, `You can't afford this plan. Need ${fmtMoney(costs.totalCost)} but you have ${fmtMoney(state.player.money)}.`, "warn");
+        flashAlert("Not enough money.");
+        return null;
+      }
+
+      const odds = calcMissionOdds(state, mission, draft, t);
+
+      return {
+        missionId: mission.id,
+        originCityId: mission.originCityId,
+        destinationCityId: mission.destinationCityId,
+        transportId: t.id,
+        routeMode: draft.routeMode,
+        routeId: draft.routeId,
+        routeName: draft.routeName || (draft.routeMode === "manual" ? "Manual Route" : "Route"),
+        services: deepClone(draft.services),
+        suppliesKey: draft.suppliesKey,
+        assignedStaffInstanceIds: deepClone(draft.assignedStaffInstanceIds),
+        distanceKm,
+        durationMinutes,
+        costs,
+        odds
+      };
+    }
+
+    function updateBreakdown() {
+      const t = getTransport(draft.transportId);
+      if (!t) return;
+      const distanceKm = estimateDistanceKm(origin, dest);
+      const durationHours = estimateMissionDurationHours(mission, t, distanceKm, draft.routeMode, draft.routeId);
+      const costs = calcMissionCosts(state, mission, draft, t);
+      const odds = calcMissionOdds(state, mission, draft, t);
+
+      breakdown.innerHTML = "";
+
+      breakdown.appendChild(el("div", "breakLine", `Distance estimate: ~${Math.round(distanceKm)} km (MVP)`));
+      breakdown.appendChild(el("div", "breakLine", `Estimated duration: ~${Math.round(durationHours)} in-game hours`));
+
+      breakdown.appendChild(el("hr", "breakHr"));
+
+      breakdown.appendChild(el("div", "breakLine", `Transport rental: ${fmtMoney(costs.rental)}`));
+      breakdown.appendChild(el("div", "breakLine", `Infrastructure fees: ${fmtMoney(costs.infraFees)}`));
+      breakdown.appendChild(el("div", "breakLine", `Services: ${fmtMoney(costs.services)}`));
+      breakdown.appendChild(el("div", "breakLine", `Supplies: ${fmtMoney(costs.supplies)}`));
+
+      breakdown.appendChild(el("hr", "breakHr"));
+
+      breakdown.appendChild(el("div", "breakLine", `Total cost now: ${fmtMoney(costs.totalCost)}`));
+
+      const estProfit = Math.round(mission.baseReward - costs.totalCost);
+      const profitLine = el("div", "breakLine", `Base reward: ${fmtMoney(mission.baseReward)} • Est. profit (no modifiers): ${fmtMoney(estProfit)}`);
+      profitLine.classList.add(estProfit >= 0 ? "good" : "bad");
+      breakdown.appendChild(profitLine);
+
+      breakdown.appendChild(el("hr", "breakHr"));
+
+      breakdown.appendChild(el("div", "breakLine", `Prep score: ${Math.round(odds.prepScore)}/100`));
+      breakdown.appendChild(el("div", "breakLine", `Condition score: ${Math.round(odds.conditionScore)}`));
+      breakdown.appendChild(el("div", "breakLine", `Event chance: ${Math.round(odds.eventChance * 100)}%`));
+      breakdown.appendChild(el("div", "breakLine", `Success chance: ${Math.round(odds.successChance * 100)}%`));
+
+      btnDispatch.disabled = state.player.money < costs.totalCost;
+      btnDispatch.textContent = btnDispatch.disabled ? "Can't Afford" : "Confirm & Dispatch";
+    }
+
+    updateBreakdown();
+
+    openModal({
+      title: "Mission Planner",
+      bodyEl: body,
+      footerButtons: [] // we use internal buttons
+    });
+  }
+
+  function estimateDistanceKm(origin, dest) {
+    if (!origin || !dest) return 120;
+    const dx = (dest.x - origin.x);
+    const dy = (dest.y - origin.y);
+    const distUnits = Math.sqrt(dx * dx + dy * dy);
+    return distUnits * CONFIG.mapUnitKm;
+  }
+
+  function estimateMissionDurationHours(mission, transport, distanceKm, routeMode, routeId) {
+    // Base derived travel time
+    // Higher transport.speed => faster. baseSpeedKmPerHour scales the world.
+    const baseKph = CONFIG.baseSpeedKmPerHour * Math.max(0.5, transport.speed);
+    let hours = distanceKm / baseKph;
+
+    // route modifiers if known route selected
+    if (routeMode !== "manual" && routeId) {
+      const route = (app.data.cities?.knownRoutes || []).find(r => r.id === routeId);
+      if (route?.durationModifier) hours *= route.durationModifier;
+      if (routeMode === "shady") hours *= 0.95; // slightly faster, riskier
+    } else if (routeMode === "manual") {
+      hours *= 1.05;
+    }
+
+    // Ensure it never feels instant; clamp minimum
+    // Use mission.baseDurationHours as minimum, but tutorial gets bumped to ~1–2 days.
+    const minBase = mission.baseDurationHours || 6;
+    hours = Math.max(hours, minBase);
+
+    // Make tutorial mission feel like a real trip (1–2 in-game days)
+    if (mission.tutorial) hours = Math.max(hours, 28); // ~1.2 days
+    // Difficulty stretches time modestly
+    hours *= (1 + (Math.max(0, (mission.difficulty || 1) - 1) * 0.18));
+
+    return Math.max(1, hours);
+  }
+
+  function calcMissionCosts(state, mission, draft, transport) {
+    // Rental
+    const rental = transport.baseRentalCost || 0;
+
+    // Services
+    let services = 0;
+    for (const k of Object.keys(draft.services || {})) {
+      if (draft.services[k]) services += (CONFIG.services[k]?.cost || 0);
+    }
+
+    // Supplies
+    const supplies = CONFIG.supplies[draft.suppliesKey]?.cost || 0;
+
+    // Infra fees depend on transport type + ownership
+    const origin = getCity(mission.originCityId);
+    const dest = getCity(mission.destinationCityId);
+
+    const infraFees = calcInfraFees(state, transport.id, origin, dest);
+
+    const totalCost = rental + services + supplies + infraFees;
+
+    return {
+      rental,
+      services,
+      supplies,
+      infraFees,
+      totalCost
+    };
+  }
+
+  function calcInfraFees(state, transportId, origin, dest) {
+    // Determine required facility
+    const feesOrigin = origin?.fees || {};
+    const feesDest = dest?.fees || {};
+
+    let requiredType = null;
+    let originFee = 0;
+    let destFee = 0;
+
+    if (transportId === "ship") {
+      requiredType = "dock";
+      originFee = feesOrigin.dockUseFee || 0;
+      destFee = feesDest.dockUseFee || 0;
+    } else if (transportId === "train") {
+      requiredType = "railDepot";
+      originFee = feesOrigin.railUseFee || 0;
+      destFee = feesDest.railUseFee || 0;
+    } else if (transportId === "plane" || transportId === "dirigible") {
+      // No hangar building in MVP data; treat as "airfield fee" always payable
+      requiredType = "airfield";
+      originFee = feesOrigin.airfieldUseFee || 0;
+      destFee = feesDest.airfieldUseFee || 0;
+    } else {
+      // mule
+      requiredType = "road";
+      originFee = CONFIG.infra.originHandling;
+      destFee = CONFIG.infra.destinationHandling;
+    }
+
+    // Ownership reduces fee (if building exists in that city)
+    if (requiredType === "dock" || requiredType === "railDepot") {
+      if (ownsFacilityInCity(state, origin?.id, requiredType)) originFee = Math.floor(originFee * 0.25);
+      if (ownsFacilityInCity(state, dest?.id, requiredType)) destFee = Math.floor(destFee * 0.25);
+    }
+
+    // handling add-on (except road where it already is the fee)
+    if (requiredType !== "road") {
+      originFee += CONFIG.infra.originHandling;
+      destFee += CONFIG.infra.destinationHandling;
+    }
+
+    return originFee + destFee;
+  }
+
+  function ownsFacilityInCity(state, cityId, facilityType) {
+    if (!cityId) return false;
+    for (const inst of state.player.ownedBuildings) {
+      if (inst.cityId !== cityId) continue;
+      const cat = getBuildingCatalog(inst.buildingId);
+      if (!cat) continue;
+      if (cat.type === facilityType) return true;
+    }
+    return false;
+  }
+
+  function calcMissionOdds(state, mission, draft, transport) {
+    const origin = getCity(mission.originCityId);
+    const dest = getCity(mission.destinationCityId);
+
+    // Prep score (0..100)
+    let prep = 0;
+
+    // Transport contribution: lower baseRisk helps, higher speed helps a bit
+    const transportScore = clamp(58 - (transport.baseRisk * 1.25) + (transport.speed * 4), 10, 70);
+    prep += transportScore;
+
+    // Infrastructure: small bonus if owned facilities exist
+    if (transport.id === "ship") {
+      if (ownsFacilityInCity(state, origin?.id, "dock")) prep += 6;
+      if (ownsFacilityInCity(state, dest?.id, "dock")) prep += 6;
+    }
+    if (transport.id === "train") {
+      if (ownsFacilityInCity(state, origin?.id, "railDepot")) prep += 6;
+      if (ownsFacilityInCity(state, dest?.id, "railDepot")) prep += 6;
+    }
+
+    // Services bonuses
+    for (const k of Object.keys(draft.services || {})) {
+      if (draft.services[k]) prep += (CONFIG.services[k]?.bonus || 0);
+    }
+
+    // Supplies bonus
+    prep += (CONFIG.supplies[draft.suppliesKey]?.bonus || 0);
+
+    // Staff bonuses
+    prep += calcStaffBonus(state, draft);
+
+    prep = clamp(prep, 0, 100);
+
+    // Condition score (can be negative)
+    const weather = getWeatherForCity(state, mission.originCityId);
+    const weatherMod = weatherModifier(weather);
+
+    // Region risk
+    const originRegion = getRegion(origin?.regionId);
+    const destRegion = getRegion(dest?.regionId);
+
+    const regionRisk = ((originRegion?.baseRisk || 10) + (destRegion?.baseRisk || 10)) / 2;
+
+    // Route risk modifiers
+    let routeRiskMod = 0;
+    if (draft.routeMode !== "manual" && draft.routeId) {
+      const route = (app.data.cities?.knownRoutes || []).find(r => r.id === draft.routeId);
+      routeRiskMod += (route?.baseRiskModifier || 0);
+      if (draft.routeMode === "shady") routeRiskMod += 8;
+    } else {
+      // manual is unknown, slightly riskier baseline
+      routeRiskMod += 5;
+    }
+
+    // Conditions: higher region risk reduces condition
+    const condition = (0 - regionRisk * 0.45) + weatherMod + (0 - routeRiskMod * 0.6);
+
+    // Map to chance ranges
+    const combined = clamp(prep + condition, 0, 100);
+    const riskValue = 100 - combined;
+
+    const eventChance = clamp(0.08 + (riskValue / 100) * 0.42, 0.08, 0.55);
+    const successChance = clamp((combined / 100) * 0.92 + 0.05, 0.05, 0.95);
+
+    return {
+      prepScore: prep,
+      conditionScore: condition,
+      combinedScore: combined,
+      riskValue,
+      eventChance,
+      successChance
+    };
+  }
+
+  function calcStaffBonus(state, draft) {
+    let bonus = 0;
+    const ids = draft.assignedStaffInstanceIds || [];
+    for (const id of ids) {
+      const s = state.player.staff.find(x => x.instanceId === id);
+      if (!s) continue;
+
+      const sk = s.skills || {};
+      bonus += (sk.logistics || 0) * 0.08;
+      bonus += (sk.navigation || 0) * 0.06;
+      bonus += (sk.security || 0) * 0.07;
+
+      // Forecasting helps only if forecast service purchased
+      if (draft.services?.forecast) bonus += (sk.forecasting || 0) * 0.04;
+
+      // Trait nudges
+      const traits = s.traits || [];
+      if (traits.includes("Methodical")) bonus += 2;
+      if (traits.includes("StrongBack")) bonus += 1.5;
+      if (traits.includes("ObsessedWithClouds") && draft.services?.forecast) bonus += 2;
+      if (traits.includes("ShortTemper")) bonus -= 1;
+    }
+    return clamp(bonus, -5, 22);
+  }
+
+  function weatherModifier(w) {
+    if (w === "clear") return 0;
+    if (w === "rain") return -6;
+    if (w === "fog") return -8;
+    if (w === "storm") return -14;
+    if (w === "snow") return -10;
+    return -2;
+  }
+
+  function dispatchMission(plan) {
+    const state = app.state;
+    const mission = getMission(plan.missionId);
+    if (!mission) return false;
+
+    // Deduct money now
+    state.player.money -= plan.costs.totalCost;
+
+    const nowM = state.world.time.totalMinutes;
+    const departedAt = minutesToClock(nowM);
+
+    const etaM = nowM + plan.durationMinutes;
+    const eta = minutesToClock(etaM);
+
+    const run = {
+      runId: `run_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+      missionId: plan.missionId,
+      startedAtMinutes: nowM,
+      departedAtMinutes: nowM,
+      departedAt,
+      durationMinutes: plan.durationMinutes,
+      etaMinutes: etaM,
+      eta,
+      progressPct: 0,
+      nextEventCheckAtMinutes: nowM + CONFIG.eventCheckIntervalMins,
+      eventsUsed: 0,
+      rewardMult: 1.0,
+      cargoLossPct: 0,
+      reputationDelta: 0,
+      travelLog: [],
+      plan: {
+        transportId: plan.transportId,
+        routeMode: plan.routeMode,
+        routeId: plan.routeId,
+        routeName: plan.routeName,
+        services: plan.services,
+        suppliesKey: plan.suppliesKey,
+        assignedStaffInstanceIds: plan.assignedStaffInstanceIds,
+        costs: plan.costs,
+        odds: plan.odds,
+        distanceKm: plan.distanceKm
+      }
+    };
+
+    state.player.activeMissions.push(run);
+
+    pushLog(state, `Mission dispatched: "${mission.name}" via ${getTransport(plan.transportId)?.name || plan.transportId}.`, "good");
+    pushLog(state, `Departed ${getCity(mission.originCityId)?.name || "Origin"} → ${getCity(mission.destinationCityId)?.name || "Destination"} • ETA Day ${eta.day} ${pad2(eta.hour)}:${pad2(eta.minute)}.`, "info");
+
+    // Tutorial: once dispatched tutorial mission, advance
+    if (!state.tutorial.completed && mission.tutorial && state.tutorial.step <= 2) {
+      state.tutorial.step = 3;
+      showTutorialOverlay({
+        title: "Mission Running",
+        paragraphs: [
+          "Great. The mission is traveling now.",
+          "Check the Missions tab to see progress, and the Log tab for incidents."
+        ],
+        buttonLabel: "Continue",
+        onNext: () => hideTutorialOverlay()
+      });
+    }
+
+    flashAlert("Mission dispatched.");
+    renderHUD();
+    return true;
+  }
+
+  /* =========================
+     ACTIVE MISSION UPDATES
+  ========================== */
+  function updateActiveMissions(state) {
+    const nowM = state.world.time.totalMinutes;
+
+    // iterate backwards so we can remove completed
+    for (let i = state.player.activeMissions.length - 1; i >= 0; i--) {
+      const run = state.player.activeMissions[i];
+      const mission = getMission(run.missionId);
+      if (!mission) continue;
+
+      const elapsed = nowM - run.startedAtMinutes;
+      run.progressPct = clamp((elapsed / run.durationMinutes) * 100, 0, 100);
+
+      // Check for travel events periodically
+      if (run.eventsUsed < CONFIG.maxEventsPerMission && nowM >= run.nextEventCheckAtMinutes && run.progressPct < 98) {
+        run.nextEventCheckAtMinutes += CONFIG.eventCheckIntervalMins;
+        maybeTriggerTravelEvent(state, run, mission);
+      }
+
+      // Complete mission
+      if (elapsed >= run.durationMinutes) {
+        completeMissionRun(state, run, mission);
+        state.player.activeMissions.splice(i, 1);
+      }
+    }
+  }
+
+  function maybeTriggerTravelEvent(state, run, mission) {
+    const odds = run.plan?.odds || calcMissionOdds(state, mission, run.plan, getTransport(run.plan.transportId));
+    const chance = odds.eventChance || 0.15;
+
+    if (Math.random() > chance) return;
+
+    // Filter events by risk range
+    const riskValue = odds.riskValue ?? 50;
+    const all = app.data.events?.events || [];
+    const candidates = all.filter(e => {
+      const minR = e.minRisk ?? 0;
+      const maxR = e.maxRisk ?? 100;
+      return riskValue >= minR && riskValue <= maxR;
+    });
+
+    if (candidates.length === 0) return;
+
+    const picked = pickWeighted(candidates, e => e.weight ?? 1);
+    if (!picked) return;
+
+    applyTravelEvent(state, run, mission, picked);
+    run.eventsUsed += 1;
+  }
+
+  function applyTravelEvent(state, run, mission, eventDef) {
+    // Log + apply modifiers
+    if (eventDef.logText) {
+      pushLog(state, `En route: ${eventDef.logText}`, "warn");
+      run.travelLog.push(`• ${eventDef.logText}`);
+    }
+
+    const mods = eventDef.modifiers || {};
+
+    // Duration multiplier affects remaining travel time (so it feels meaningful mid-run)
+    if (typeof mods.durationMult === "number" && mods.durationMult !== 1) {
+      const nowM = state.world.time.totalMinutes;
+      const elapsed = nowM - run.startedAtMinutes;
+      const remaining = Math.max(0, run.durationMinutes - elapsed);
+      const newRemaining = Math.round(remaining * mods.durationMult);
+      run.durationMinutes = elapsed + newRemaining;
+
+      run.etaMinutes = run.startedAtMinutes + run.durationMinutes;
+      run.eta = minutesToClock(run.etaMinutes);
+    }
+
+    // Reward multiplier stacks
+    if (typeof mods.rewardMult === "number" && mods.rewardMult !== 1) {
+      run.rewardMult *= mods.rewardMult;
+      run.rewardMult = clamp(run.rewardMult, 0.2, 2.0);
+    }
+
+    // Cargo loss stacks
+    if (typeof mods.cargoLossPct === "number") {
+      run.cargoLossPct = clamp(run.cargoLossPct + mods.cargoLossPct, 0, 95);
+    }
+
+    // Reputation
+    if (typeof mods.reputationDelta === "number") {
+      run.reputationDelta += mods.reputationDelta;
+    }
+
+    // If faction event, note faction
+    if (eventDef.factionId) {
+      const f = getFaction(eventDef.factionId);
+      if (f) {
+        run.travelLog.push(`  (Faction involved: ${f.name})`);
+      }
+    }
+
+    if (eventDef.outcomeText) {
+      pushLog(state, eventDef.outcomeText, "info");
+      run.travelLog.push(`  ${eventDef.outcomeText}`);
+    }
+  }
+
+  function completeMissionRun(state, run, mission) {
+    // Final success/fail roll based on odds
+    const odds = run.plan?.odds || { successChance: 0.75 };
+    const successRoll = Math.random();
+    const success = successRoll <= (odds.successChance || 0.75);
+
+    // Deadline check (late penalty)
+    const deadlineMinutes = (mission.deadlineHours || 24) * 60;
+    const actualDuration = run.durationMinutes;
+    const late = actualDuration > deadlineMinutes;
+
+    let deliveryFactor = 1.0;
+    let kind = "good";
+
+    if (!success) {
+      // Failure: some salvage possible
+      deliveryFactor = 0.18;
+      kind = "bad";
+    } else if (late) {
+      deliveryFactor = 0.82;
+      kind = "warn";
+    }
+
+    // Apply cargo loss
+    const cargoFactor = 1 - (run.cargoLossPct / 100);
+
+    const base = mission.baseReward || 0;
+    const payout = Math.max(0, Math.round(base * run.rewardMult * deliveryFactor * cargoFactor));
+
+    state.player.money += payout;
+
+    // Rep bookkeeping (per destination)
+    const destId = mission.destinationCityId;
+    if (!state.player.reputationByCity[destId]) state.player.reputationByCity[destId] = 0;
+    state.player.reputationByCity[destId] += run.reputationDelta;
+
+    // Mark completed once (for tutorial purposes)
+    state.player.completedMissions[mission.id] = true;
+
+    // Report
+    const originName = getCity(mission.originCityId)?.name || "Origin";
+    const destName = getCity(mission.destinationCityId)?.name || "Destination";
+    const transportName = getTransport(run.plan.transportId)?.name || run.plan.transportId;
+
+    let report = `Mission complete: "${mission.name}" (${originName} → ${destName})\n`;
+    report += `Transport: ${transportName}\n`;
+    report += `Outcome: ${success ? (late ? "Delivered (Late)" : "Delivered") : "Failed"}\n`;
+    if (run.cargoLossPct > 0) report += `Cargo loss: ${run.cargoLossPct}%\n`;
+    report += `Payout: ${fmtMoney(payout)} (base ${fmtMoney(base)})\n`;
+    report += `Net (rough): ${fmtMoney(payout - (run.plan?.costs?.totalCost || 0))}\n`;
+
+    pushLog(state, report, kind);
+
+    // Tutorial completion on first mission
+    if (!state.tutorial.completed && mission.tutorial) {
+      state.tutorial.step = 4;
+      state.tutorial.completed = true;
+
+      showTutorialOverlay({
+        title: "Nice Work",
+        paragraphs: [
+          `You completed your first contract and earned ${fmtMoney(payout)}.`,
+          "Now you can keep running contracts, hire staff, and fund local investments.",
+          "In later phases, you'll build docks, rail depots, weather stations, and expand to other cities."
+        ],
+        buttonLabel: "Finish",
+        onNext: () => hideTutorialOverlay()
+      });
+    }
+
+    flashAlert(success ? "Mission completed!" : "Mission failed.");
+    renderHUD();
+    renderMarkers();
+  }
+
+  /* =========================
+     INVESTMENTS MATURITY
+  ========================== */
+  function updateInvestments(state) {
+    const nowM = state.world.time.totalMinutes;
+
+    for (let i = state.player.investments.length - 1; i >= 0; i--) {
+      const inst = state.player.investments[i];
+      if (nowM < inst.maturesAtMinutes) continue;
+
+      const inv = getInvestment(inst.invId);
+      if (!inv) {
+        state.player.investments.splice(i, 1);
+        continue;
+      }
+
+      // Risk roll: higher risk increases chance of partial loss
+      const risk = clamp(inv.risk || 0, 0, 100);
+      const failChance = clamp((risk / 100) * 0.55, 0.02, 0.55);
+      const roll = Math.random();
+
+      let payout = 0;
+      let kind = "good";
+
+      if (roll < failChance) {
+        // partial return
+        payout = Math.round(inv.totalReturn * 0.35);
+        kind = "warn";
+        pushLog(state, `Investment matured (trouble): ${inv.name} returned only ${fmtMoney(payout)}.`, kind);
+      } else {
+        payout = Math.round(inv.totalReturn);
+        pushLog(state, `Investment matured: ${inv.name} paid ${fmtMoney(payout)}.`, kind);
+      }
+
+      state.player.money += payout;
+      state.player.investments.splice(i, 1);
+      flashAlert("Investment payout!");
+      renderHUD();
+    }
+  }
+
+  /* =========================
+     TUTORIAL FLOW
+  ========================== */
+  function maybeStartTutorial() {
+    const state = app.state;
+    if (!CONFIG.tutorial.enabled) return;
+    if (state.tutorial.completed) return;
+
+    // Start at step 0
+    if (state.tutorial.step === 0) {
+      showTutorialOverlay({
+        title: "An Inheritance",
+        paragraphs: [
+          "Your uncle left you 500 crowns and a tiny warehouse HQ in Dockford.",
+          "A friend whispers about a low-risk starter contract: a pig-dung delivery to Farmville.",
+          "Let’s plan your first mission."
+        ],
+        buttonLabel: "Start",
+        onNext: () => {
+          hideTutorialOverlay();
+          state.tutorial.step = 1;
+          setTab("missions");
+          pushLog(state, "Tutorial: Open the mission list and select “Stink of Opportunity.”", "good");
+          renderMissionsTab();
+        }
+      });
+    }
+  }
+
+  function maybeAdvanceTutorialFromState() {
+    const state = app.state;
+    if (state.tutorial.completed) return;
+
+    // Step 1: waiting for player to open planner (handled in openMissionPlanner)
+    // Step 2: waiting for dispatch (handled in dispatchMission)
+    // Step 3: waiting for completion (handled in completeMissionRun)
+  }
