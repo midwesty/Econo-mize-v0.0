@@ -2,22 +2,74 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Fleet & Fortune: Demo</title>
+    <title>Fleet & Fortune v0.1</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body onload="loadGameData()">
-    <div id="hud">
-        <div id="sidebar">
-            <h2>Fleet & Fortune</h2>
-            <div id="credits-display">Credits: ...</div>
-            <div id="mission-list"></div>
-            <div id="transport-list"></div>
-        </div>
-        <div id="main">
-            <h3>Mission Log</h3>
-            <div id="log" class="log-box"></div>
-        </div>
+    <!-- Top HUD Bar -->
+    <header id="top-bar">
+        <div class="hud-item" id="hud-credits">Credits: ...</div>
+        <div class="hud-item" id="hud-weather">Weather: Clear, wind S</div>
+        <div class="hud-item" id="hud-time">Date: Y1 M1 D1</div>
+    </header>
+
+    <!-- Main Layout -->
+    <div id="game-container">
+        <!-- Sidebar Navigation -->
+        <nav id="sidebar">
+            <h1>Fleet & Fortune</h1>
+            <button onclick="toggleView('missions')">Missions</button>
+            <button onclick="toggleView('transport')">Transport</button>
+            <button onclick="toggleView('staff')">Staff</button>
+            <button onclick="toggleView('services')">Services</button>
+            <button onclick="toggleMapView()">Toggle Map/Town</button>
+        </nav>
+
+        <!-- Main Game View -->
+        <main id="main-view">
+            <!-- Map Placeholder -->
+            <section id="map-view" class="view">
+                <h2>World Map</h2>
+                <div id="placeholder-map">[Map Placeholder]</div>
+            </section>
+
+            <!-- Missions View -->
+            <section id="missions-view" class="view hidden">
+                <h2>Available Missions</h2>
+                <div id="mission-list"></div>
+            </section>
+
+            <!-- Transport View -->
+            <section id="transport-view" class="view hidden">
+                <h2>Available Transport</h2>
+                <div id="transport-list"></div>
+            </section>
+
+            <!-- Staff View -->
+            <section id="staff-view" class="view hidden">
+                <h2>Available Staff</h2>
+                <div id="staff-list">
+                    <p>[Staff hiring and stats will appear here]</p>
+                </div>
+            </section>
+
+            <!-- Services View -->
+            <section id="services-view" class="view hidden">
+                <h2>Local Services</h2>
+                <div id="services-list">
+                    <p>[Weather forecasts, supply shops, investments]</p>
+                </div>
+            </section>
+
+            <!-- Mission Log -->
+            <section id="log-view">
+                <h2>Mission Log</h2>
+                <div id="log" class="log-box"></div>
+            </section>
+        </main>
     </div>
+
+    <!-- Scripts -->
     <script src="game.js"></script>
 </body>
 </html>

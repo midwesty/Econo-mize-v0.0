@@ -1,126 +1,112 @@
-// game.js - Main game logic for tutorial demo
-
-let gameState = {
+let player = {
     credits: 500,
-    selectedMission: null,
-    selectedTransport: null,
-    selectedServices: [],
-    currentStep: "intro",
-    log: [],
-    inProgress: false
+    day: 1,
+    month: 1,
+    year: 1
 };
 
-const missionTimerDuration = 10 * 1000; // 10 seconds = 1 in-game day for demo
+let missions = [];
+let transports = [];
 
-async function loadGameData() {
-    const [missions, transports, cities] = await Promise.all([
+function loadGameData() {
+    Promise.all([
         fetch('data/missions.json').then(res => res.json()),
-        fetch('data/transport.json').then(res => res.json()),
-        fetch('data/cities.json').then(res => res.json())
-    ]);
-    gameState.missions = missions;
-    gameState.transports = transports;
-    gameState.cities = cities;
-
-    initGame();
-}
-
-function initGame() {
-    logMessage("You have inherited 500 crowns and a dilapidated warehouse.");
-    showAvailableMissions();
-    updateUI();
-}
-
-function showAvailableMissions() {
-    const missionList = document.getElementById('mission-list');
-    missionList.innerHTML = "";
-    gameState.missions.forEach((mission, index) => {
-        const el = document.createElement('div');
-        el.className = "mission-card";
-        el.innerHTML = `
-            <h4>${mission.title}</h4>
-            <p>Destination: ${mission.destination}</p>
-            <p>Reward: ${mission.reward}c</p>
-            <button onclick="selectMission(${index})">Plan This Mission</button>
-        `;
-        missionList.appendChild(el);
+        fetch('data/transport.json').then(res => res.json())
+    ]).then(([missionsData, transportData]) => {
+        missions = missionsData;
+        transports = transportData;
+        updateHUD();
+        populateMissions();
+        populateTransports();
+        showView("map-view");
     });
 }
 
-function selectMission(index) {
-    gameState.selectedMission = gameState.missions[index];
-    logMessage("Mission selected: " + gameState.selectedMission.title);
-    showTransportOptions();
+function updateHUD() {
+    document.getElementById("hud-credits").innerText = `Credits: ${player.credits}`;
+    document.getElementById("hud-time").innerText = `Date: Y${player.year} M${player.month} D${player.day}`;
+    document.getElementById("hud-weather").innerText = `Weather: Sunny, Wind SE`;
 }
 
-function showTransportOptions() {
-    const transportList = document.getElementById('transport-list');
-    transportList.innerHTML = "<h3>Select Transport</h3>";
-    gameState.transports.forEach((trans, index) => {
-        const affordable = gameState.credits >= trans.rental_cost;
-        const buttonLabel = affordable ? "Select" : `Need ${trans.rental_cost - gameState.credits} more`;
-        const buttonState = affordable ? "" : "disabled";
-        const el = document.createElement('div');
-        el.className = "transport-card";
-        el.innerHTML = `
-            <h4>${trans.name}</h4>
-            <p>Rental Cost: ${trans.rental_cost}c</p>
-            <p>Speed: ${trans.speed}</p>
-            <button onclick="selectTransport(${index})" ${buttonState}>${buttonLabel}</button>
+function populateMissions() {
+    const container = document.getElementById("mission-list");
+    container.innerHTML = "";
+    missions.forEach(m => {
+        const div = document.createElement("div");
+        div.className = "card";
+        div.innerHTML = `
+            <h4>${m.title}</h4>
+            <p><strong>Origin:</strong> ${m.origin}</p>
+            <p><strong>Destination:</strong> ${m.destination}</p>
+            <p><strong>Reward:</strong> ${m.reward} credits</p>
+            <p><strong>Cargo:</strong> ${m.cargo}</p>
+            <button class="select-btn" onclick="attemptMission(${m.id})">Attempt Mission</button>
         `;
-        transportList.appendChild(el);
+        container.appendChild(div);
     });
 }
 
-function selectTransport(index) {
-    gameState.selectedTransport = gameState.transports[index];
-    logMessage("Transport selected: " + gameState.selectedTransport.name);
-    confirmMission();
+function populateTransports() {
+    const container = document.getElementById("transport-list");
+    container.innerHTML = "";
+    transports.forEach(t => {
+        const div = document.createElement("div");
+        div.className = "card";
+        div.innerHTML = `
+            <h4>${t.name}</h4>
+            <p><strong>Cost:</strong> ${t.rental_cost}</p>
+            <p><strong>Speed:</strong> ${t.speed}</p>
+            <p><strong>Capacity:</strong> ${t.capacity}</p>
+        `;
+        container.appendChild(div);
+    });
 }
 
-function confirmMission() {
-    const totalCost = gameState.selectedTransport.rental_cost;
-    if (gameState.credits < totalCost) {
-        logMessage("You can't afford this transport.");
+function attemptMission(missionId) {
+    const mission = missions.find(m => m.id === missionId);
+    if (!mission) return;
+    
+    const transport = transports.find(t => t.id === "mule");
+    if (player.credits < transport.rental_cost) {
+        log(`❌ Not enough credits to rent transport for: ${mission.title}`);
         return;
     }
 
-    gameState.credits -= totalCost;
-    gameState.inProgress = true;
-    updateUI();
-    logMessage("Mission launched: " + gameState.selectedMission.title);
-    logMessage("En route to " + gameState.selectedMission.destination + "...");
+    log(`🚚 Starting mission: ${mission.title} using Mule & Cart...`);
+    player.credits -= transport.rental_cost;
+    updateHUD();
 
     setTimeout(() => {
-        completeMission();
-    }, missionTimerDuration);
+        player.credits += mission.reward;
+        log(`✅ Mission complete: ${mission.title} - Gained ${mission.reward} credits`);
+        updateHUD();
+    }, 3000);
 }
 
-function completeMission() {
-    const success = Math.random() < 0.9; // 90% chance of success
-    if (success) {
-        gameState.credits += gameState.selectedMission.reward;
-        logMessage("Mission success! Received " + gameState.selectedMission.reward + " crowns.");
-    } else {
-        logMessage("Mission failed. Bandits stole your cargo!");
-    }
-
-    gameState.selectedMission = null;
-    gameState.selectedTransport = null;
-    gameState.inProgress = false;
-    updateUI();
-    showAvailableMissions();
-}
-
-function logMessage(msg) {
-    const logBox = document.getElementById('log');
-    const time = new Date().toLocaleTimeString();
-    const line = document.createElement('div');
-    line.textContent = `[${time}] ${msg}`;
+function log(message) {
+    const logBox = document.getElementById("log");
+    const line = document.createElement("div");
+    line.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
     logBox.appendChild(line);
     logBox.scrollTop = logBox.scrollHeight;
 }
 
-function updateUI() {
-    document.getElementById('credits-display').textContent = "Credits: " + gameState.credits;
+// View Toggling
+function showView(id) {
+    document.querySelectorAll(".view").forEach(v => v.classList.add("hidden"));
+    document.getElementById(id).classList.remove("hidden");
 }
+
+function toggleView(view) {
+    showView(`${view}-view`);
+}
+
+function toggleMapView() {
+    const current = document.getElementById("map-view");
+    if (current.classList.contains("hidden")) {
+        showView("map-view");
+    } else {
+        showView("missions-view");
+    }
+}
+
