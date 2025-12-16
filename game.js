@@ -2,7 +2,7 @@
 Fleet Baron (Demo) — game.js
 Vanilla JS single-file MVP implementation.
 
-You have:
+Folder:
   /index.html  (IDs must match)
   /style.css
   /data/
@@ -15,16 +15,15 @@ You have:
     events.json
     investments.json
 
-This file implements:
+Implements:
 - World/Town views with clickable markers
 - Tabs: Log / Missions / Staff / Investments
 - Tutorial: intro + guided first mission planning
-- Mission Planner (transport/route/services/staff/supplies) + dispatch
+- Mission Planner + dispatch
 - Active mission tracking with in-game-time progress & events
-- Staff hiring + basic roster management
+- Staff hiring + roster management
 - Investments: start + mature + payout
-- Save/Load/Reset via localStorage
-
+- Save/Load/Reset via localStorage (named save slots + picker)
 ============================================================================ */
 
 (() => {
@@ -34,23 +33,29 @@ This file implements:
      CONFIG
   ========================== */
   const CONFIG = {
-    storageKey: "fleet_baron_save_v1",
+    // Save slots
+    saveIndexKey: "fleet_baron_save_index_v1",
+    saveSlotPrefix: "fleet_baron_save_slot_v1__",
+
     tickMs: 1000,               // real ms per tick
     minutesPerSecond: 10,       // 1 real second = 10 in-game minutes
     startDay: 1,
     startHour: 8,
     startMinute: 0,
-    // duration tuning: derived duration uses this scale
+
+    // duration tuning
     mapUnitKm: 12,              // map "percent points" converted to km (tune)
     baseSpeedKmPerHour: 10,     // speed factor baseline (tune)
     eventCheckIntervalMins: 120, // check for travel event every 2 in-game hours
     maxEventsPerMission: 2,
+
     // basic service costs
     services: {
       forecast: { cost: 25, bonus: 6 },
       cargoPrep: { cost: 35, bonus: 7 },
       crewBroker: { cost: 45, bonus: 8 }
     },
+
     // basic supplies (placeholder "stocking vessel")
     supplies: {
       none: { name: "None", cost: 0, bonus: 0 },
@@ -58,15 +63,14 @@ This file implements:
       sturdy: { name: "Sturdy Supplies", cost: 35, bonus: 6 },
       premium: { name: "Premium Supplies", cost: 65, bonus: 10 }
     },
-    // basic infra lease costs when player lacks owned facilities (fees come from city data too)
+
+    // basic infra lease costs when player lacks owned facilities
     infra: {
       originHandling: 15,
       destinationHandling: 15
     },
-    // tutorial behavior
-    tutorial: {
-      enabled: true
-    }
+
+    tutorial: { enabled: true }
   };
 
   const DATA_FILES = {
@@ -94,7 +98,6 @@ This file implements:
   }
 
   function clamp(n, a, b) { return Math.max(a, Math.min(b, n)); }
-  function round2(n) { return Math.round(n * 100) / 100; }
   function deepClone(obj) { return JSON.parse(JSON.stringify(obj)); }
 
   function fmtMoney(n) {
@@ -141,7 +144,6 @@ This file implements:
     refs: {},
     state: null,
     intervalId: null,
-    // ephemeral UI state
     ui: {
       view: "world",
       activeTab: "log",
@@ -154,7 +156,6 @@ This file implements:
      DEFAULT STATE
   ========================== */
   function buildDefaultState(data) {
-    // Choose starter HQ city
     const starter = (data.cities?.cities || []).find(c => c.isStarterHQ) || (data.cities?.cities || [])[0];
     const starterCityId = starter ? starter.id : "city_dockford";
 
@@ -163,7 +164,6 @@ This file implements:
         money: 500,
         reputationByCity: {},
         hqs: [starterCityId],
-        // building instances (not catalog)
         ownedBuildings: [
           {
             instanceId: "bld_inst_hq_1",
@@ -173,10 +173,10 @@ This file implements:
           }
         ],
         ownedTransports: [],
-        staff: [], // hired staff instances
-        activeMissions: [], // active mission runs
-        completedMissions: {}, // missionId -> true
-        investments: [] // active investments instances
+        staff: [],
+        activeMissions: [],
+        completedMissions: {},
+        investments: []
       },
       world: {
         time: {
@@ -185,8 +185,7 @@ This file implements:
           minute: CONFIG.startMinute,
           totalMinutes: (CONFIG.startDay - 1) * 1440 + CONFIG.startHour * 60 + CONFIG.startMinute
         },
-        weatherByRegion: {}, // regionId -> { state, updatedAtMinutes }
-        // simple global log
+        weatherByRegion: {},
         log: []
       },
       tutorial: {
@@ -234,39 +233,27 @@ This file implements:
   function getCity(cityId) {
     return (app.data.cities?.cities || []).find(c => c.id === cityId) || null;
   }
-
   function getRegion(regionId) {
     return (app.data.cities?.regions || []).find(r => r.id === regionId) || null;
   }
-
   function getMission(missionId) {
     return (app.data.missions?.missions || []).find(m => m.id === missionId) || null;
   }
-
   function getTransport(transportId) {
     return (app.data.transport?.transport || []).find(t => t.id === transportId) || null;
   }
-
   function getBuildingCatalog(buildingId) {
     return (app.data.buildings?.buildings || []).find(b => b.id === buildingId) || null;
   }
-
   function getStaffTemplate(staffId) {
     return (app.data.staff?.templates || []).find(s => s.id === staffId) || null;
   }
-
-  function getEventDef(eventId) {
-    return (app.data.events?.events || []).find(e => e.id === eventId) || null;
-  }
-
   function getFaction(factionId) {
     return (app.data.factions?.factions || []).find(f => f.id === factionId) || null;
   }
-
   function getInvestment(invId) {
     return (app.data.investments?.investments || []).find(i => i.id === invId) || null;
   }
-
   function getKnownRoutesBetween(originId, destId) {
     return (app.data.cities?.knownRoutes || []).filter(r =>
       r.originCityId === originId && r.destinationCityId === destId
@@ -274,7 +261,7 @@ This file implements:
   }
 
   /* =========================
-     WEATHER (simple MVP)
+     WEATHER
   ========================== */
   function initWeatherIfNeeded(state) {
     const regions = app.data.cities?.regions || [];
@@ -289,14 +276,12 @@ This file implements:
   }
 
   function pickWeatherForRegion(region) {
-    // region.weatherBias is an array of favored states
     const bias = region?.weatherBias || ["clear", "rain", "fog", "storm"];
     const pick = bias[rngInt(0, bias.length - 1)];
     return pick || "clear";
   }
 
   function maybeAdvanceWeather(state) {
-    // change weather every 6 in-game hours per region (simple)
     const regions = app.data.cities?.regions || [];
     const nowM = state.world.time.totalMinutes;
     for (const r of regions) {
@@ -334,6 +319,14 @@ This file implements:
     t.minute = minute;
   }
 
+  function minutesToClock(totalMinutes) {
+    const day = Math.floor(totalMinutes / 1440) + 1;
+    const within = totalMinutes % 1440;
+    const hour = Math.floor(within / 60);
+    const minute = within % 60;
+    return { day, hour, minute };
+  }
+
   /* =========================
      LOGGING
   ========================== */
@@ -344,9 +337,8 @@ This file implements:
       kind,
       text
     });
-    // cap log size
     if (state.world.log.length > 200) state.world.log.length = 200;
-    renderActiveTab(); // update log quickly
+    if (app.ui.activeTab === "log") renderLogTab();
   }
 
   function flashAlert(msg) {
@@ -358,42 +350,190 @@ This file implements:
   }
 
   /* =========================
-     SAVE / LOAD / RESET
+     SAVE SLOTS (NAMED)
   ========================== */
-  function saveGame() {
+  function getSaveIndex() {
     try {
-      localStorage.setItem(CONFIG.storageKey, JSON.stringify(app.state));
-      pushLog(app.state, "Game saved.", "good");
-      flashAlert("Saved.");
-      renderAll();
-    } catch (e) {
-      console.error(e);
-      pushLog(app.state, "Save failed.", "bad");
-      flashAlert("Save failed.");
+      const raw = localStorage.getItem(CONFIG.saveIndexKey);
+      const idx = raw ? JSON.parse(raw) : { slots: [] };
+      if (!idx || !Array.isArray(idx.slots)) return { slots: [] };
+      return idx;
+    } catch {
+      return { slots: [] };
     }
   }
 
-  function loadGame() {
-    try {
-      const raw = localStorage.getItem(CONFIG.storageKey);
-      if (!raw) {
-        pushLog(app.state, "No save found.", "warn");
-        flashAlert("No save found.");
-        return;
-      }
-      const loaded = JSON.parse(raw);
-      // basic sanity: must have player/world
-      if (!loaded?.player || !loaded?.world) throw new Error("Invalid save.");
-      app.state = loaded;
-      initWeatherIfNeeded(app.state);
-      pushLog(app.state, "Game loaded.", "good");
-      flashAlert("Loaded.");
-      renderAll();
-    } catch (e) {
-      console.error(e);
-      pushLog(app.state, "Load failed.", "bad");
-      flashAlert("Load failed.");
+  function setSaveIndex(indexObj) {
+    localStorage.setItem(CONFIG.saveIndexKey, JSON.stringify(indexObj));
+  }
+
+  function slotKey(name) {
+    return CONFIG.saveSlotPrefix + name;
+  }
+
+  function upsertSlot(name) {
+    const idx = getSaveIndex();
+    const now = Date.now();
+    const existing = idx.slots.find(s => s.name === name);
+    if (existing) {
+      existing.updatedAt = now;
+    } else {
+      idx.slots.push({ name, updatedAt: now });
     }
+    idx.slots.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    setSaveIndex(idx);
+  }
+
+  function deleteSlot(name) {
+    const idx = getSaveIndex();
+    idx.slots = idx.slots.filter(s => s.name !== name);
+    setSaveIndex(idx);
+    localStorage.removeItem(slotKey(name));
+  }
+
+  function openSaveLoadModal(mode) {
+    const state = app.state;
+    const idx = getSaveIndex();
+
+    const body = el("div");
+    body.appendChild(el("div", "muted",
+      mode === "save"
+        ? "Type a save name, then click Save. Existing names will be overwritten."
+        : "Pick a save slot, then click Load."
+    ));
+
+    // Name input (save mode)
+    let nameInput = null;
+    if (mode === "save") {
+      const wrap = el("div", "panelSection");
+      wrap.appendChild(el("div", "sectionTitle", "Save Name"));
+      nameInput = document.createElement("input");
+      nameInput.type = "text";
+      nameInput.placeholder = "e.g. Day1_Dockford";
+      nameInput.style.width = "100%";
+      nameInput.style.padding = "10px";
+      nameInput.style.borderRadius = "12px";
+      nameInput.style.border = "1px solid rgba(255,255,255,0.16)";
+      nameInput.style.background = "rgba(255,255,255,0.06)";
+      nameInput.style.color = "rgba(233,238,247,0.95)";
+      nameInput.value = "autosave";
+      wrap.appendChild(nameInput);
+      body.appendChild(wrap);
+    }
+
+    // Slot list
+    const listWrap = el("div", "panelSection");
+    listWrap.appendChild(el("div", "sectionTitle", "Slots"));
+
+    const slots = idx.slots || [];
+    let selected = slots[0]?.name || null;
+
+    if (slots.length === 0) {
+      listWrap.appendChild(el("div", "muted", "No saves yet."));
+    } else {
+      for (const s of slots) {
+        const btn = el("button", "listItem");
+        btn.type = "button";
+        btn.appendChild(el("div", "liTitle", s.name));
+        const date = s.updatedAt ? new Date(s.updatedAt).toLocaleString() : "Unknown";
+        btn.appendChild(el("div", "liMeta", `Updated: ${date}`));
+
+        btn.addEventListener("click", () => {
+          selected = s.name;
+          for (const b of $$(".listItem", listWrap)) b.classList.remove("highlight");
+          btn.classList.add("highlight");
+        });
+
+        // pre-highlight first
+        if (s.name === selected) btn.classList.add("highlight");
+
+        listWrap.appendChild(btn);
+
+        // delete button (only for load modal)
+        if (mode === "load") {
+          const delRow = el("div", "cardActions");
+          const del = el("button", "btn small danger", "Delete");
+          del.type = "button";
+          del.addEventListener("click", (e) => {
+            e.stopPropagation();
+            if (!confirm(`Delete save "${s.name}"?`)) return;
+            deleteSlot(s.name);
+            flashAlert("Deleted save.");
+            closeTopModal();
+            openSaveLoadModal("load");
+          });
+          delRow.appendChild(del);
+          listWrap.appendChild(delRow);
+        }
+      }
+    }
+
+    body.appendChild(listWrap);
+
+    const footerButtons = [];
+
+    if (mode === "save") {
+      footerButtons.push({
+        label: "Save",
+        className: "btn primary",
+        onClick: () => {
+          const rawName = (nameInput?.value || "").trim();
+          const safe = rawName.replace(/[^\w\- ]+/g, "").trim();
+          const name = safe || "autosave";
+          try {
+            localStorage.setItem(slotKey(name), JSON.stringify(app.state));
+            upsertSlot(name);
+            pushLog(state, `Game saved as "${name}".`, "good");
+            flashAlert("Saved.");
+            closeTopModal();
+            renderAll();
+          } catch (e) {
+            console.error(e);
+            pushLog(state, "Save failed.", "bad");
+            flashAlert("Save failed.");
+          }
+        }
+      });
+    } else {
+      footerButtons.push({
+        label: "Load",
+        className: "btn primary",
+        onClick: () => {
+          if (!selected) {
+            flashAlert("No slot selected.");
+            return;
+          }
+          try {
+            const raw = localStorage.getItem(slotKey(selected));
+            if (!raw) {
+              pushLog(state, `Save "${selected}" not found.`, "warn");
+              flashAlert("Save missing.");
+              return;
+            }
+            const loaded = JSON.parse(raw);
+            if (!loaded?.player || !loaded?.world) throw new Error("Invalid save.");
+            app.state = loaded;
+            initWeatherIfNeeded(app.state);
+            pushLog(app.state, `Game loaded from "${selected}".`, "good");
+            flashAlert("Loaded.");
+            closeTopModal();
+            renderAll();
+          } catch (e) {
+            console.error(e);
+            pushLog(state, "Load failed.", "bad");
+            flashAlert("Load failed.");
+          }
+        }
+      });
+    }
+
+    footerButtons.push({ label: "Close", className: "btn", onClick: closeTopModal });
+
+    openModal({
+      title: mode === "save" ? "Save Game" : "Load Game",
+      bodyEl: body,
+      footerButtons
+    });
   }
 
   function resetGame() {
@@ -448,8 +588,8 @@ This file implements:
     app.refs.btnWorld.addEventListener("click", () => setView("world"));
     app.refs.btnTown.addEventListener("click", () => setView("town"));
 
-    app.refs.btnSave.addEventListener("click", saveGame);
-    app.refs.btnLoad.addEventListener("click", loadGame);
+    app.refs.btnSave.addEventListener("click", () => openSaveLoadModal("save"));
+    app.refs.btnLoad.addEventListener("click", () => openSaveLoadModal("load"));
     app.refs.btnReset.addEventListener("click", resetGame);
 
     app.refs.tabBtn_log.addEventListener("click", () => setTab("log"));
@@ -457,10 +597,8 @@ This file implements:
     app.refs.tabBtn_staff.addEventListener("click", () => setTab("staff"));
     app.refs.tabBtn_investments.addEventListener("click", () => setTab("investments"));
 
-    // close modal on ESC
     window.addEventListener("keydown", (e) => {
       if (e.key === "Escape") {
-        // if tutorial open, ignore ESC to avoid breaking steps
         if (app.ui.tutorialOverlayOpen) return;
         closeTopModal();
       }
@@ -485,7 +623,6 @@ This file implements:
 
   function setTab(tab) {
     app.ui.activeTab = tab;
-    // buttons
     for (const t of ["log", "missions", "staff", "investments"]) {
       app.refs[`tabBtn_${t}`].classList.toggle("active", t === tab);
       app.refs[`panel_${t}`].style.display = (t === tab) ? "" : "none";
@@ -498,37 +635,28 @@ This file implements:
   ========================== */
   function startLoop() {
     if (app.intervalId) clearInterval(app.intervalId);
-    app.intervalId = setInterval(() => {
-      tick();
-    }, CONFIG.tickMs);
+    app.intervalId = setInterval(() => tick(), CONFIG.tickMs);
   }
 
   function tick() {
     const state = app.state;
 
-    // advance time
     advanceTime(state, CONFIG.minutesPerSecond);
-
-    // update world systems
     maybeAdvanceWeather(state);
 
-    // update missions + investments
     updateActiveMissions(state);
     updateInvestments(state);
 
-    // update HUD + active tab minimal
     renderHUD();
 
-    // if missions changed, we’ll re-render missions tab on demand
     if (app.ui.activeTab === "missions") renderMissionsTab();
     if (app.ui.activeTab === "investments") renderInvestmentsTab();
 
-    // tutorial checks
     if (!state.tutorial.completed) maybeAdvanceTutorialFromState();
   }
 
   /* =========================
-     PLACEHOLDER STUBS (Part 2/3 will fill)
+     RENDER (HUD / MARKERS / TABS)
   ========================== */
   function renderAll() {
     renderHUD();
@@ -536,68 +664,6 @@ This file implements:
     renderActiveTab();
   }
 
-  function renderHUD() { /* implemented in Part 2 */ }
-  function renderMarkers() { /* implemented in Part 2 */ }
-  function renderActiveTab() { /* implemented in Part 2 */ }
-
-  function renderLogTab() { /* implemented in Part 2 */ }
-  function renderMissionsTab() { /* implemented in Part 2 */ }
-  function renderStaffTab() { /* implemented in Part 2 */ }
-  function renderInvestmentsTab() { /* implemented in Part 2 */ }
-
-  function openCityPanel(cityId) { /* implemented in Part 2 */ }
-  function openBuildingPanel(instanceId) { /* implemented in Part 2 */ }
-
-  function openMissionPlanner(missionId, source = "list") { /* implemented in Part 3 */ }
-
-  function updateActiveMissions(state) { /* implemented in Part 3 */ }
-  function updateInvestments(state) { /* implemented in Part 3 */ }
-
-  function closeAllModals() { /* implemented in Part 2 */ }
-  function closeTopModal() { /* implemented in Part 2 */ }
-
-  function showTutorialOverlay(opts) { /* implemented in Part 2 */ }
-  function hideTutorialOverlay() { /* implemented in Part 2 */ }
-  function maybeStartTutorial() { /* implemented in Part 3 */ }
-  function maybeAdvanceTutorialFromState() { /* implemented in Part 3 */ }
-
-  /* =========================
-     BOOT
-  ========================== */
-  async function boot() {
-    cacheRefs();
-
-    // ensure modalRoot starts closed
-    app.refs.modalRoot.classList.remove("open");
-
-    try {
-      await loadAllData();
-    } catch (e) {
-      console.error(e);
-      alert("Failed to load game data JSON. Check /data/ paths and filenames.");
-      return;
-    }
-
-    app.state = buildDefaultState(app.data);
-    initWeatherIfNeeded(app.state);
-
-    bindUI();
-    setView("world");
-    setTab("log");
-
-    pushLog(app.state, "You inherit 500 crowns and a tiny warehouse HQ in Dockford.", "good");
-
-    renderAll();
-    startLoop();
-    maybeStartTutorial();
-  }
-
-  window.addEventListener("DOMContentLoaded", boot);
-
-})();
-  /* =========================
-     HUD RENDER
-  ========================== */
   function renderHUD() {
     const state = app.state;
     const t = state.world.time;
@@ -609,11 +675,11 @@ This file implements:
 
     app.refs.moneyDisplay.textContent = `Money: ${fmtMoney(state.player.money)}`;
 
-    // Simplified income/upkeep for demo: show active investments and salaries
     const dailySalary = calcDailySalaries(state);
     const invCount = state.player.investments.length;
     const activeMissions = state.player.activeMissions.length;
-    app.refs.incomeDisplay.textContent = `Staff Salaries: ${fmtMoney(dailySalary)}/day • Investments: ${invCount} • Active Missions: ${activeMissions}`;
+    app.refs.incomeDisplay.textContent =
+      `Staff Salaries: ${fmtMoney(dailySalary)}/day • Investments: ${invCount} • Active Missions: ${activeMissions}`;
   }
 
   function calcDailySalaries(state) {
@@ -622,9 +688,6 @@ This file implements:
     return sum;
   }
 
-  /* =========================
-     MARKERS (World + Town)
-  ========================== */
   function renderMarkers() {
     const state = app.state;
     const worldLayer = app.refs.worldMarkers;
@@ -633,13 +696,10 @@ This file implements:
     townLayer.innerHTML = "";
 
     if (app.ui.view === "world") {
-      // City markers
       for (const c of (app.data.cities?.cities || [])) {
-        const m = makeCityMarker(state, c);
-        worldLayer.appendChild(m);
+        worldLayer.appendChild(makeCityMarker(state, c));
       }
 
-      // Active mission badges near origin (simple)
       for (const run of state.player.activeMissions) {
         const mission = getMission(run.missionId);
         if (!mission) continue;
@@ -658,19 +718,15 @@ This file implements:
 
         worldLayer.appendChild(badge);
       }
-
     } else {
-      // Town markers: show HQ building + a couple plots (simple MVP)
       const hqCityId = state.player.hqs[0];
       const hqCity = getCity(hqCityId);
       if (!hqCity) return;
 
-      // Place HQ near center-left
       const hqMarker = makeBuildingMarker("HQ", 35, 55, true);
       hqMarker.addEventListener("click", () => openHQPanel(hqCityId));
       townLayer.appendChild(hqMarker);
 
-      // Dummy plot markers
       const plotA = makePlotMarker("Empty Plot", 58, 46);
       plotA.addEventListener("click", () => openBuildMenu(hqCityId));
       townLayer.appendChild(plotA);
@@ -679,13 +735,11 @@ This file implements:
       plotB.addEventListener("click", () => openBuildMenu(hqCityId));
       townLayer.appendChild(plotB);
 
-      // Existing owned building instances (besides HQ shell) shown as markers (optional)
       const owned = state.player.ownedBuildings.filter(b => b.cityId === hqCityId && b.buildingId !== "hq_shell");
       let offset = 0;
       for (const inst of owned) {
         const catalog = getBuildingCatalog(inst.buildingId);
         if (!catalog) continue;
-        // scatter markers a bit
         const x = 40 + (offset * 6);
         const y = 34 + (offset * 8);
         offset++;
@@ -713,7 +767,6 @@ This file implements:
 
     marker.title = city.description || city.name;
     marker.addEventListener("click", () => openCityPanel(city.id));
-
     return marker;
   }
 
@@ -729,7 +782,6 @@ This file implements:
 
     marker.appendChild(dot);
     marker.appendChild(label);
-
     return marker;
   }
 
@@ -738,19 +790,12 @@ This file implements:
     marker.style.left = `${xPct}%`;
     marker.style.top = `${yPct}%`;
 
-    const dot = el("div", "markerDot");
-    const label = el("div", "markerLabel", name);
-
-    marker.appendChild(dot);
-    marker.appendChild(label);
-
+    marker.appendChild(el("div", "markerDot"));
+    marker.appendChild(el("div", "markerLabel", name));
     marker.title = "Build here (demo stub)";
     return marker;
   }
 
-  /* =========================
-     TAB RENDERING
-  ========================== */
   function renderActiveTab() {
     const t = app.ui.activeTab;
     if (t === "log") renderLogTab();
@@ -766,10 +811,8 @@ This file implements:
     panel.innerHTML = "";
 
     const lead = el("div", "panelLead");
-    const title = el("div", "panelTitleBig", "Log");
-    const desc = el("div", "muted", "Mission updates, events, tutorial prompts.");
-    lead.appendChild(title);
-    lead.appendChild(desc);
+    lead.appendChild(el("div", "panelTitleBig", "Log"));
+    lead.appendChild(el("div", "muted", "Mission updates, events, tutorial prompts."));
     panel.appendChild(lead);
 
     const list = el("div", "logList");
@@ -778,10 +821,8 @@ This file implements:
     } else {
       for (const entry of state.world.log.slice(0, 40)) {
         const row = el("div", `logRow ${entry.kind || ""}`);
-        const time = el("div", "logTime", entry.time);
-        const text = el("div", "logText", entry.text);
-        row.appendChild(time);
-        row.appendChild(text);
+        row.appendChild(el("div", "logTime", entry.time));
+        row.appendChild(el("div", "logText", entry.text));
         list.appendChild(row);
       }
     }
@@ -796,11 +837,9 @@ This file implements:
 
     const lead = el("div", "panelLead");
     lead.appendChild(el("div", "panelTitleBig", "Missions"));
-
-    const help = el("div", "muted",
+    lead.appendChild(el("div", "muted",
       "Pick a contract, plan it (transport, route, services, staff), then dispatch. Active missions progress over in-game time."
-    );
-    lead.appendChild(help);
+    ));
 
     const actions = el("div", "cardActions");
     const btnPlan = el("button", "btn primary", "Plan Mission");
@@ -811,7 +850,6 @@ This file implements:
     lead.appendChild(actions);
     panel.appendChild(lead);
 
-    // Active missions
     const activeSection = el("div", "panelSection");
     activeSection.appendChild(el("div", "sectionTitle", "Active Missions"));
 
@@ -839,34 +877,24 @@ This file implements:
         activeSection.appendChild(card);
       }
     }
-
     panel.appendChild(activeSection);
 
-    // Available missions
     const availSection = el("div", "panelSection");
     availSection.appendChild(el("div", "sectionTitle", "Available Contracts"));
 
     const missions = (app.data.missions?.missions || []);
     for (const m of missions) {
-      // allow re-running; tutorial marks completed but still playable
       const item = el("button", "listItem");
       item.type = "button";
 
-      const t = el("div", "liTitle", m.name);
-      const d = el("div", "liSub", m.description);
-      const meta = el("div", "liMeta", `Reward: ${fmtMoney(m.baseReward)} • Difficulty: ${m.difficulty} • Deadline: ${m.deadlineHours}h`);
+      item.appendChild(el("div", "liTitle", m.name));
+      item.appendChild(el("div", "liSub", m.description));
+      item.appendChild(el("div", "liMeta", `Reward: ${fmtMoney(m.baseReward)} • Difficulty: ${m.difficulty} • Deadline: ${m.deadlineHours}h`));
 
-      item.appendChild(t);
-      item.appendChild(d);
-      item.appendChild(meta);
-
-      // Tutorial highlight
       if (!state.tutorial.completed && m.tutorial) item.classList.add("highlight");
-
       item.addEventListener("click", () => openMissionPlanner(m.id, "list"));
       availSection.appendChild(item);
     }
-
     panel.appendChild(availSection);
   }
 
@@ -880,7 +908,6 @@ This file implements:
     lead.appendChild(el("div", "muted", "Hire staff in your HQ city. Assign them during mission planning (MVP)."));
     panel.appendChild(lead);
 
-    // Owned staff roster
     const roster = el("div", "panelSection");
     roster.appendChild(el("div", "sectionTitle", "Your Staff"));
 
@@ -892,7 +919,6 @@ This file implements:
         card.appendChild(el("div", "cardTitle", `${s.name} — ${prettyRole(s.role)}`));
         card.appendChild(el("div", "cardLine", `Salary: ${fmtMoney(s.salaryDaily)}/day`));
         card.appendChild(el("div", "cardLine", `Traits: ${(s.traits || []).join(", ") || "None"}`));
-
         const skills = s.skills || {};
         card.appendChild(el("div", "cardLine", `Skills: forecasting ${skills.forecasting || 0}, navigation ${skills.navigation || 0}, logistics ${skills.logistics || 0}, security ${skills.security || 0}`));
 
@@ -901,14 +927,13 @@ This file implements:
         btnFire.type = "button";
         btnFire.addEventListener("click", () => dismissStaff(s.instanceId));
         acts.appendChild(btnFire);
-        card.appendChild(acts);
 
+        card.appendChild(acts);
         roster.appendChild(card);
       }
     }
     panel.appendChild(roster);
 
-    // Hiring pool in HQ city
     const hire = el("div", "panelSection");
     hire.appendChild(el("div", "sectionTitle", "Hire in Current HQ"));
 
@@ -941,7 +966,6 @@ This file implements:
         hire.appendChild(card);
       }
     }
-
     panel.appendChild(hire);
   }
 
@@ -955,7 +979,6 @@ This file implements:
     lead.appendChild(el("div", "muted", "Fund local projects for passive returns. (MVP: payouts occur at end of duration.)"));
     panel.appendChild(lead);
 
-    // Active investments
     const active = el("div", "panelSection");
     active.appendChild(el("div", "sectionTitle", "Active Investments"));
 
@@ -969,12 +992,11 @@ This file implements:
         card.appendChild(el("div", "cardTitle", inv.name));
         card.appendChild(el("div", "cardLine", `Cost: ${fmtMoney(inv.cost)} • Total Return: ${fmtMoney(inv.totalReturn)} • Risk: ${inv.risk}`));
         card.appendChild(el("div", "cardLine", `Matures: Day ${inst.maturesAt.day} ${pad2(inst.maturesAt.hour)}:${pad2(inst.maturesAt.minute)}`));
-        panel.appendChild(card);
+        active.appendChild(card);
       }
     }
     panel.appendChild(active);
 
-    // Opportunities (HQ city)
     const opp = el("div", "panelSection");
     opp.appendChild(el("div", "sectionTitle", "Opportunities (HQ City)"));
 
@@ -993,7 +1015,7 @@ This file implements:
         const acts = el("div", "cardActions");
         const btn = el("button", "btn small primary", "Fund");
         btn.type = "button";
-        btn.disabled = app.state.player.money < inv.cost;
+        btn.disabled = state.player.money < inv.cost;
         btn.addEventListener("click", () => startInvestment(inv.id));
         acts.appendChild(btn);
 
@@ -1016,7 +1038,7 @@ This file implements:
   }
 
   /* =========================
-     CITY PANEL (World click)
+     CITY PANEL
   ========================== */
   function openCityPanel(cityId) {
     const city = getCity(cityId);
@@ -1040,15 +1062,12 @@ This file implements:
     const btnForecast = el("button", "btn small", `Buy Forecast (${fmtMoney(CONFIG.services.forecast.cost)})`);
     btnForecast.type = "button";
     btnForecast.disabled = state.player.money < CONFIG.services.forecast.cost;
-    btnForecast.addEventListener("click", () => {
-      buyForecast(cityId);
-    });
+    btnForecast.addEventListener("click", () => buyForecast(cityId));
     acts.appendChild(btnForecast);
     weatherCard.appendChild(acts);
 
     body.appendChild(weatherCard);
 
-    // Mission shortcuts from city
     const mCard = el("div", "card");
     mCard.appendChild(el("div", "cardTitle", "Contracts From Here"));
     const list = (app.data.missions?.missions || []).filter(m => m.originCityId === cityId);
@@ -1064,7 +1083,6 @@ This file implements:
     }
     body.appendChild(mCard);
 
-    // Basic faction note
     const factionCard = el("div", "card");
     factionCard.appendChild(el("div", "cardTitle", "Factions"));
     const factions = (app.data.factions?.factions || []).filter(f => (f.territories || []).includes(city.regionId));
@@ -1080,9 +1098,7 @@ This file implements:
     openModal({
       title: `City: ${city.name}`,
       bodyEl: body,
-      footerButtons: [
-        { label: "Close", className: "btn", onClick: closeTopModal }
-      ]
+      footerButtons: [{ label: "Close", className: "btn", onClick: closeTopModal }]
     });
   }
 
@@ -1096,25 +1112,19 @@ This file implements:
     const city = getCity(cityId);
     const region = getRegion(city?.regionId);
     const bias = region?.weatherBias || ["clear", "rain", "fog", "storm"];
-    // create a “forecast” list (approximate)
     const forecast = [];
-    for (let i = 0; i < 3; i++) {
-      forecast.push(bias[rngInt(0, bias.length - 1)]);
-    }
+    for (let i = 0; i < 3; i++) forecast.push(bias[rngInt(0, bias.length - 1)]);
 
     pushLog(state, `Forecast purchased for ${city?.name || "city"}: Next 3 days → ${forecast.join(", ")}.`, "good");
     flashAlert("Forecast received.");
     renderHUD();
-    renderActiveTab();
   }
 
   /* =========================
-     TOWN PANELS (MVP stubs)
+     TOWN PANELS
   ========================== */
   function openHQPanel(cityId) {
     const city = getCity(cityId);
-    const state = app.state;
-
     const body = el("div");
 
     const lead = el("div", "panelLead");
@@ -1153,9 +1163,7 @@ This file implements:
     openModal({
       title: "HQ",
       bodyEl: body,
-      footerButtons: [
-        { label: "Close", className: "btn", onClick: closeTopModal }
-      ]
+      footerButtons: [{ label: "Close", className: "btn", onClick: closeTopModal }]
     });
   }
 
@@ -1193,9 +1201,7 @@ This file implements:
     openModal({
       title: "Construction",
       bodyEl: body,
-      footerButtons: [
-        { label: "Close", className: "btn", onClick: closeTopModal }
-      ]
+      footerButtons: [{ label: "Close", className: "btn", onClick: closeTopModal }]
     });
   }
 
@@ -1230,7 +1236,6 @@ This file implements:
     const city = getCity(inst.cityId);
 
     const body = el("div");
-
     const lead = el("div", "panelLead");
     lead.appendChild(el("div", "panelTitleBig", `${cat?.name || inst.buildingId}`));
     lead.appendChild(el("div", "muted", `Location: ${city?.name || "?"} • Level ${inst.level}`));
@@ -1243,7 +1248,6 @@ This file implements:
     card.appendChild(el("div", "cardLine", `Features: ${(cat?.features || []).join(", ") || "None"}`));
     body.appendChild(card);
 
-    // Upgrade (basic)
     const upCard = el("div", "card");
     upCard.appendChild(el("div", "cardTitle", "Upgrade"));
     const nextKey = `level${inst.level + 1}`;
@@ -1255,7 +1259,7 @@ This file implements:
       const acts = el("div", "cardActions");
       const btn = el("button", "btn small primary", "Upgrade");
       btn.type = "button";
-      btn.disabled = app.state.player.money < cost;
+      btn.disabled = state.player.money < cost;
       btn.addEventListener("click", () => {
         upgradeBuilding(instanceId);
         closeTopModal();
@@ -1268,9 +1272,7 @@ This file implements:
     openModal({
       title: "Building",
       bodyEl: body,
-      footerButtons: [
-        { label: "Close", className: "btn", onClick: closeTopModal }
-      ]
+      footerButtons: [{ label: "Close", className: "btn", onClick: closeTopModal }]
     });
   }
 
@@ -1296,7 +1298,7 @@ This file implements:
   }
 
   /* =========================
-     STAFF: Hire / Dismiss
+     STAFF
   ========================== */
   function getHirePoolForCity(cityId) {
     return (app.data.staff?.templates || []).filter(tpl =>
@@ -1309,10 +1311,8 @@ This file implements:
     const tpl = getStaffTemplate(templateId);
     if (!tpl) return;
 
-    // Already hired?
     if (state.player.staff.some(s => s.templateId === templateId)) return;
 
-    // Hiring fee? (MVP: none) — you start paying daily salary implicitly
     const inst = deepClone(tpl);
     inst.instanceId = `staff_inst_${Date.now()}_${Math.random().toString(16).slice(2)}`;
     inst.templateId = tpl.id;
@@ -1335,7 +1335,6 @@ This file implements:
 
     const s = state.player.staff[idx];
 
-    // Prevent dismissal if currently assigned to an active mission run
     const assigned = state.player.activeMissions.some(r =>
       (r.plan?.assignedStaffInstanceIds || []).includes(instanceId)
     );
@@ -1355,7 +1354,7 @@ This file implements:
   }
 
   /* =========================
-     INVESTMENTS: start (matures handled in Part 3)
+     INVESTMENTS
   ========================== */
   function startInvestment(invId) {
     const state = app.state;
@@ -1384,16 +1383,44 @@ This file implements:
     renderInvestmentsTab();
   }
 
-  function minutesToClock(totalMinutes) {
-    const day = Math.floor(totalMinutes / 1440) + 1;
-    const within = totalMinutes % 1440;
-    const hour = Math.floor(within / 60);
-    const minute = within % 60;
-    return { day, hour, minute };
+  function updateInvestments(state) {
+    const nowM = state.world.time.totalMinutes;
+
+    for (let i = state.player.investments.length - 1; i >= 0; i--) {
+      const inst = state.player.investments[i];
+      if (nowM < inst.maturesAtMinutes) continue;
+
+      const inv = getInvestment(inst.invId);
+      if (!inv) {
+        state.player.investments.splice(i, 1);
+        continue;
+      }
+
+      const risk = clamp(inv.risk || 0, 0, 100);
+      const failChance = clamp((risk / 100) * 0.55, 0.02, 0.55);
+      const roll = Math.random();
+
+      let payout = 0;
+      let kind = "good";
+
+      if (roll < failChance) {
+        payout = Math.round(inv.totalReturn * 0.35);
+        kind = "warn";
+        pushLog(state, `Investment matured (trouble): ${inv.name} returned only ${fmtMoney(payout)}.`, kind);
+      } else {
+        payout = Math.round(inv.totalReturn);
+        pushLog(state, `Investment matured: ${inv.name} paid ${fmtMoney(payout)}.`, kind);
+      }
+
+      state.player.money += payout;
+      state.player.investments.splice(i, 1);
+      flashAlert("Investment payout!");
+      renderHUD();
+    }
   }
 
   /* =========================
-     MISSION PICKER (quick modal)
+     MISSION PICKER + REPORT
   ========================== */
   function openMissionPicker() {
     const body = el("div");
@@ -1418,15 +1445,10 @@ This file implements:
     openModal({
       title: "Plan a Mission",
       bodyEl: body,
-      footerButtons: [
-        { label: "Close", className: "btn", onClick: closeTopModal }
-      ]
+      footerButtons: [{ label: "Close", className: "btn", onClick: closeTopModal }]
     });
   }
 
-  /* =========================
-     ACTIVE MISSION REPORT (simple)
-  ========================== */
   function openActiveMissionReport(runId) {
     const state = app.state;
     const run = state.player.activeMissions.find(r => r.runId === runId);
@@ -1464,9 +1486,7 @@ This file implements:
     openModal({
       title: "Active Mission",
       bodyEl: body,
-      footerButtons: [
-        { label: "Close", className: "btn", onClick: closeTopModal }
-      ]
+      footerButtons: [{ label: "Close", className: "btn", onClick: closeTopModal }]
     });
   }
 
@@ -1517,11 +1537,8 @@ This file implements:
     const root = app.refs.modalRoot;
     const overlays = $$(".modalOverlay", root);
     if (overlays.length === 0) return;
-    const top = overlays[overlays.length - 1];
-    top.remove();
-    if ($$(".modalOverlay", root).length === 0) {
-      root.classList.remove("open");
-    }
+    overlays[overlays.length - 1].remove();
+    if ($$(".modalOverlay", root).length === 0) root.classList.remove("open");
   }
 
   function closeAllModals() {
@@ -1531,7 +1548,7 @@ This file implements:
   }
 
   /* =========================
-     TUTORIAL OVERLAY (simple)
+     TUTORIAL OVERLAY
   ========================== */
   function showTutorialOverlay({ title, paragraphs, buttonLabel = "Next", onNext }) {
     const overlay = app.refs.tutorialOverlay;
@@ -1569,10 +1586,10 @@ This file implements:
     overlay.innerHTML = "";
     app.ui.tutorialOverlayOpen = false;
   }
+
   /* =========================
      MISSION PLANNER + DISPATCH
   ========================== */
-
   function openMissionPlanner(missionId, source = "list") {
     const state = app.state;
     const mission = getMission(missionId);
@@ -1581,7 +1598,6 @@ This file implements:
     const origin = getCity(mission.originCityId);
     const dest = getCity(mission.destinationCityId);
 
-    // Tutorial detection: opening planner advances tutorial step
     if (!state.tutorial.completed && mission.tutorial && state.tutorial.step <= 1) {
       state.tutorial.step = 2;
       showTutorialOverlay({
@@ -1595,11 +1611,10 @@ This file implements:
       });
     }
 
-    // Planner draft state
     const draft = {
       missionId,
       transportId: null,
-      routeMode: "known", // known | shady | manual
+      routeMode: "known",
       routeId: null,
       routeName: null,
       services: { forecast: false, cargoPrep: false, crewBroker: false },
@@ -1607,14 +1622,9 @@ This file implements:
       assignedStaffInstanceIds: []
     };
 
-    // Preselect: mule if exists
-    const mule = getTransport("mule");
-    if (mule) draft.transportId = "mule";
+    if (getTransport("mule")) draft.transportId = "mule";
 
-    // Known routes
     const knownRoutes = getKnownRoutesBetween(mission.originCityId, mission.destinationCityId);
-
-    // If there are known routes, default to the first "Main" route if possible
     if (knownRoutes.length > 0) {
       const main = knownRoutes.find(r => /main/i.test(r.name)) || knownRoutes[0];
       draft.routeId = main.id;
@@ -1622,11 +1632,9 @@ This file implements:
       draft.routeMode = /shady/i.test(main.name) ? "shady" : "known";
     } else {
       draft.routeMode = "manual";
-      draft.routeId = null;
       draft.routeName = "Manual Route";
     }
 
-    // Build UI
     const body = el("div");
 
     const lead = el("div", "panelLead");
@@ -1635,7 +1643,6 @@ This file implements:
     lead.appendChild(el("div", "muted", `From: ${origin?.name || "?"} → To: ${dest?.name || "?"}`));
     body.appendChild(lead);
 
-    // Transport selection
     const transportSection = el("div", "panelSection");
     transportSection.appendChild(el("div", "sectionTitle", "1) Choose Transport"));
 
@@ -1657,7 +1664,6 @@ This file implements:
 
       card.addEventListener("click", () => {
         draft.transportId = t.id;
-        // rerender selection styling
         for (const c of $$(".transportCard", body)) c.classList.remove("selected");
         card.classList.add("selected");
         updateBreakdown();
@@ -1668,7 +1674,6 @@ This file implements:
     transportSection.appendChild(transportList);
     body.appendChild(transportSection);
 
-    // Route selection
     const routeSection = el("div", "panelSection");
     routeSection.appendChild(el("div", "sectionTitle", "2) Choose Route"));
 
@@ -1746,15 +1751,13 @@ This file implements:
     syncRouteButtons();
     body.appendChild(routeSection);
 
-    // Services
     const servicesSection = el("div", "panelSection");
     servicesSection.appendChild(el("div", "sectionTitle", "3) Services & Preparation"));
 
     const servicesList = el("div", "servicesList");
-
-    servicesList.appendChild(makeServiceRow("forecast", "Weather Forecast", CONFIG.services.forecast.cost, () => updateBreakdown()));
-    servicesList.appendChild(makeServiceRow("cargoPrep", "Cargo Prep Service", CONFIG.services.cargoPrep.cost, () => updateBreakdown()));
-    servicesList.appendChild(makeServiceRow("crewBroker", "Crew Broker", CONFIG.services.crewBroker.cost, () => updateBreakdown()));
+    servicesList.appendChild(makeServiceRow("forecast", "Weather Forecast", CONFIG.services.forecast.cost, updateBreakdown));
+    servicesList.appendChild(makeServiceRow("cargoPrep", "Cargo Prep Service", CONFIG.services.cargoPrep.cost, updateBreakdown));
+    servicesList.appendChild(makeServiceRow("crewBroker", "Crew Broker", CONFIG.services.crewBroker.cost, updateBreakdown));
 
     servicesSection.appendChild(servicesList);
     body.appendChild(servicesSection);
@@ -1769,13 +1772,11 @@ This file implements:
         onChange();
       });
 
-      const txt = el("div", "checkLabel", `${label} (${fmtMoney(cost)})`);
       row.appendChild(cb);
-      row.appendChild(txt);
+      row.appendChild(el("div", "checkLabel", `${label} (${fmtMoney(cost)})`));
       return row;
     }
 
-    // Supplies (stocking)
     const suppliesSection = el("div", "panelSection");
     suppliesSection.appendChild(el("div", "sectionTitle", "4) Supplies (Stocking)"));
 
@@ -1798,7 +1799,6 @@ This file implements:
     suppliesSection.appendChild(suppliesWrap);
     body.appendChild(suppliesSection);
 
-    // Staff assignment
     const staffSection = el("div", "panelSection");
     staffSection.appendChild(el("div", "sectionTitle", "5) Assign Staff (Optional)"));
 
@@ -1813,8 +1813,7 @@ This file implements:
         cb.checked = draft.assignedStaffInstanceIds.includes(s.instanceId);
 
         cb.addEventListener("change", () => {
-          const on = cb.checked;
-          if (on) {
+          if (cb.checked) {
             if (!draft.assignedStaffInstanceIds.includes(s.instanceId)) draft.assignedStaffInstanceIds.push(s.instanceId);
           } else {
             draft.assignedStaffInstanceIds = draft.assignedStaffInstanceIds.filter(id => id !== s.instanceId);
@@ -1830,7 +1829,6 @@ This file implements:
     staffSection.appendChild(staffPick);
     body.appendChild(staffSection);
 
-    // Breakdown + confirm
     const breakdownSection = el("div", "panelSection");
     breakdownSection.appendChild(el("div", "sectionTitle", "6) Cost & Outcome Preview"));
 
@@ -1872,8 +1870,6 @@ This file implements:
       const durationMinutes = Math.max(1, Math.round(durationHours * 60));
 
       const costs = calcMissionCosts(state, mission, draft, t);
-
-      // Can't afford?
       if (state.player.money < costs.totalCost) {
         pushLog(state, `You can't afford this plan. Need ${fmtMoney(costs.totalCost)} but you have ${fmtMoney(state.player.money)}.`, "warn");
         flashAlert("Not enough money.");
@@ -1903,23 +1899,21 @@ This file implements:
     function updateBreakdown() {
       const t = getTransport(draft.transportId);
       if (!t) return;
+
       const distanceKm = estimateDistanceKm(origin, dest);
       const durationHours = estimateMissionDurationHours(mission, t, distanceKm, draft.routeMode, draft.routeId);
       const costs = calcMissionCosts(state, mission, draft, t);
       const odds = calcMissionOdds(state, mission, draft, t);
 
       breakdown.innerHTML = "";
-
       breakdown.appendChild(el("div", "breakLine", `Distance estimate: ~${Math.round(distanceKm)} km (MVP)`));
       breakdown.appendChild(el("div", "breakLine", `Estimated duration: ~${Math.round(durationHours)} in-game hours`));
-
       breakdown.appendChild(el("hr", "breakHr"));
 
       breakdown.appendChild(el("div", "breakLine", `Transport rental: ${fmtMoney(costs.rental)}`));
       breakdown.appendChild(el("div", "breakLine", `Infrastructure fees: ${fmtMoney(costs.infraFees)}`));
       breakdown.appendChild(el("div", "breakLine", `Services: ${fmtMoney(costs.services)}`));
       breakdown.appendChild(el("div", "breakLine", `Supplies: ${fmtMoney(costs.supplies)}`));
-
       breakdown.appendChild(el("hr", "breakHr"));
 
       breakdown.appendChild(el("div", "breakLine", `Total cost now: ${fmtMoney(costs.totalCost)}`));
@@ -1930,7 +1924,6 @@ This file implements:
       breakdown.appendChild(profitLine);
 
       breakdown.appendChild(el("hr", "breakHr"));
-
       breakdown.appendChild(el("div", "breakLine", `Prep score: ${Math.round(odds.prepScore)}/100`));
       breakdown.appendChild(el("div", "breakLine", `Condition score: ${Math.round(odds.conditionScore)}`));
       breakdown.appendChild(el("div", "breakLine", `Event chance: ${Math.round(odds.eventChance * 100)}%`));
@@ -1945,7 +1938,7 @@ This file implements:
     openModal({
       title: "Mission Planner",
       bodyEl: body,
-      footerButtons: [] // we use internal buttons
+      footerButtons: []
     });
   }
 
@@ -1958,65 +1951,46 @@ This file implements:
   }
 
   function estimateMissionDurationHours(mission, transport, distanceKm, routeMode, routeId) {
-    // Base derived travel time
-    // Higher transport.speed => faster. baseSpeedKmPerHour scales the world.
     const baseKph = CONFIG.baseSpeedKmPerHour * Math.max(0.5, transport.speed);
     let hours = distanceKm / baseKph;
 
-    // route modifiers if known route selected
     if (routeMode !== "manual" && routeId) {
       const route = (app.data.cities?.knownRoutes || []).find(r => r.id === routeId);
       if (route?.durationModifier) hours *= route.durationModifier;
-      if (routeMode === "shady") hours *= 0.95; // slightly faster, riskier
+      if (routeMode === "shady") hours *= 0.95;
     } else if (routeMode === "manual") {
       hours *= 1.05;
     }
 
-    // Ensure it never feels instant; clamp minimum
-    // Use mission.baseDurationHours as minimum, but tutorial gets bumped to ~1–2 days.
     const minBase = mission.baseDurationHours || 6;
     hours = Math.max(hours, minBase);
 
-    // Make tutorial mission feel like a real trip (1–2 in-game days)
-    if (mission.tutorial) hours = Math.max(hours, 28); // ~1.2 days
-    // Difficulty stretches time modestly
+    if (mission.tutorial) hours = Math.max(hours, 28);
     hours *= (1 + (Math.max(0, (mission.difficulty || 1) - 1) * 0.18));
 
     return Math.max(1, hours);
   }
 
   function calcMissionCosts(state, mission, draft, transport) {
-    // Rental
     const rental = transport.baseRentalCost || 0;
 
-    // Services
     let services = 0;
     for (const k of Object.keys(draft.services || {})) {
       if (draft.services[k]) services += (CONFIG.services[k]?.cost || 0);
     }
 
-    // Supplies
     const supplies = CONFIG.supplies[draft.suppliesKey]?.cost || 0;
 
-    // Infra fees depend on transport type + ownership
     const origin = getCity(mission.originCityId);
     const dest = getCity(mission.destinationCityId);
-
     const infraFees = calcInfraFees(state, transport.id, origin, dest);
 
     const totalCost = rental + services + supplies + infraFees;
 
-    return {
-      rental,
-      services,
-      supplies,
-      infraFees,
-      totalCost
-    };
+    return { rental, services, supplies, infraFees, totalCost };
   }
 
   function calcInfraFees(state, transportId, origin, dest) {
-    // Determine required facility
     const feesOrigin = origin?.fees || {};
     const feesDest = dest?.fees || {};
 
@@ -2033,24 +2007,20 @@ This file implements:
       originFee = feesOrigin.railUseFee || 0;
       destFee = feesDest.railUseFee || 0;
     } else if (transportId === "plane" || transportId === "dirigible") {
-      // No hangar building in MVP data; treat as "airfield fee" always payable
       requiredType = "airfield";
       originFee = feesOrigin.airfieldUseFee || 0;
       destFee = feesDest.airfieldUseFee || 0;
     } else {
-      // mule
       requiredType = "road";
       originFee = CONFIG.infra.originHandling;
       destFee = CONFIG.infra.destinationHandling;
     }
 
-    // Ownership reduces fee (if building exists in that city)
     if (requiredType === "dock" || requiredType === "railDepot") {
       if (ownsFacilityInCity(state, origin?.id, requiredType)) originFee = Math.floor(originFee * 0.25);
       if (ownsFacilityInCity(state, dest?.id, requiredType)) destFee = Math.floor(destFee * 0.25);
     }
 
-    // handling add-on (except road where it already is the fee)
     if (requiredType !== "road") {
       originFee += CONFIG.infra.originHandling;
       destFee += CONFIG.infra.destinationHandling;
@@ -2074,14 +2044,10 @@ This file implements:
     const origin = getCity(mission.originCityId);
     const dest = getCity(mission.destinationCityId);
 
-    // Prep score (0..100)
     let prep = 0;
-
-    // Transport contribution: lower baseRisk helps, higher speed helps a bit
     const transportScore = clamp(58 - (transport.baseRisk * 1.25) + (transport.speed * 4), 10, 70);
     prep += transportScore;
 
-    // Infrastructure: small bonus if owned facilities exist
     if (transport.id === "ship") {
       if (ownsFacilityInCity(state, origin?.id, "dock")) prep += 6;
       if (ownsFacilityInCity(state, dest?.id, "dock")) prep += 6;
@@ -2091,58 +2057,39 @@ This file implements:
       if (ownsFacilityInCity(state, dest?.id, "railDepot")) prep += 6;
     }
 
-    // Services bonuses
     for (const k of Object.keys(draft.services || {})) {
       if (draft.services[k]) prep += (CONFIG.services[k]?.bonus || 0);
     }
 
-    // Supplies bonus
     prep += (CONFIG.supplies[draft.suppliesKey]?.bonus || 0);
-
-    // Staff bonuses
     prep += calcStaffBonus(state, draft);
-
     prep = clamp(prep, 0, 100);
 
-    // Condition score (can be negative)
     const weather = getWeatherForCity(state, mission.originCityId);
     const weatherMod = weatherModifier(weather);
 
-    // Region risk
     const originRegion = getRegion(origin?.regionId);
     const destRegion = getRegion(dest?.regionId);
-
     const regionRisk = ((originRegion?.baseRisk || 10) + (destRegion?.baseRisk || 10)) / 2;
 
-    // Route risk modifiers
     let routeRiskMod = 0;
     if (draft.routeMode !== "manual" && draft.routeId) {
       const route = (app.data.cities?.knownRoutes || []).find(r => r.id === draft.routeId);
       routeRiskMod += (route?.baseRiskModifier || 0);
       if (draft.routeMode === "shady") routeRiskMod += 8;
     } else {
-      // manual is unknown, slightly riskier baseline
       routeRiskMod += 5;
     }
 
-    // Conditions: higher region risk reduces condition
     const condition = (0 - regionRisk * 0.45) + weatherMod + (0 - routeRiskMod * 0.6);
 
-    // Map to chance ranges
     const combined = clamp(prep + condition, 0, 100);
     const riskValue = 100 - combined;
 
     const eventChance = clamp(0.08 + (riskValue / 100) * 0.42, 0.08, 0.55);
     const successChance = clamp((combined / 100) * 0.92 + 0.05, 0.05, 0.95);
 
-    return {
-      prepScore: prep,
-      conditionScore: condition,
-      combinedScore: combined,
-      riskValue,
-      eventChance,
-      successChance
-    };
+    return { prepScore: prep, conditionScore: condition, combinedScore: combined, riskValue, eventChance, successChance };
   }
 
   function calcStaffBonus(state, draft) {
@@ -2157,10 +2104,8 @@ This file implements:
       bonus += (sk.navigation || 0) * 0.06;
       bonus += (sk.security || 0) * 0.07;
 
-      // Forecasting helps only if forecast service purchased
       if (draft.services?.forecast) bonus += (sk.forecasting || 0) * 0.04;
 
-      // Trait nudges
       const traits = s.traits || [];
       if (traits.includes("Methodical")) bonus += 2;
       if (traits.includes("StrongBack")) bonus += 1.5;
@@ -2184,7 +2129,6 @@ This file implements:
     const mission = getMission(plan.missionId);
     if (!mission) return false;
 
-    // Deduct money now
     state.player.money -= plan.costs.totalCost;
 
     const nowM = state.world.time.totalMinutes;
@@ -2228,7 +2172,6 @@ This file implements:
     pushLog(state, `Mission dispatched: "${mission.name}" via ${getTransport(plan.transportId)?.name || plan.transportId}.`, "good");
     pushLog(state, `Departed ${getCity(mission.originCityId)?.name || "Origin"} → ${getCity(mission.destinationCityId)?.name || "Destination"} • ETA Day ${eta.day} ${pad2(eta.hour)}:${pad2(eta.minute)}.`, "info");
 
-    // Tutorial: once dispatched tutorial mission, advance
     if (!state.tutorial.completed && mission.tutorial && state.tutorial.step <= 2) {
       state.tutorial.step = 3;
       showTutorialOverlay({
@@ -2247,13 +2190,9 @@ This file implements:
     return true;
   }
 
-  /* =========================
-     ACTIVE MISSION UPDATES
-  ========================== */
   function updateActiveMissions(state) {
     const nowM = state.world.time.totalMinutes;
 
-    // iterate backwards so we can remove completed
     for (let i = state.player.activeMissions.length - 1; i >= 0; i--) {
       const run = state.player.activeMissions[i];
       const mission = getMission(run.missionId);
@@ -2262,13 +2201,11 @@ This file implements:
       const elapsed = nowM - run.startedAtMinutes;
       run.progressPct = clamp((elapsed / run.durationMinutes) * 100, 0, 100);
 
-      // Check for travel events periodically
       if (run.eventsUsed < CONFIG.maxEventsPerMission && nowM >= run.nextEventCheckAtMinutes && run.progressPct < 98) {
         run.nextEventCheckAtMinutes += CONFIG.eventCheckIntervalMins;
         maybeTriggerTravelEvent(state, run, mission);
       }
 
-      // Complete mission
       if (elapsed >= run.durationMinutes) {
         completeMissionRun(state, run, mission);
         state.player.activeMissions.splice(i, 1);
@@ -2279,10 +2216,8 @@ This file implements:
   function maybeTriggerTravelEvent(state, run, mission) {
     const odds = run.plan?.odds || calcMissionOdds(state, mission, run.plan, getTransport(run.plan.transportId));
     const chance = odds.eventChance || 0.15;
-
     if (Math.random() > chance) return;
 
-    // Filter events by risk range
     const riskValue = odds.riskValue ?? 50;
     const all = app.data.events?.events || [];
     const candidates = all.filter(e => {
@@ -2292,7 +2227,6 @@ This file implements:
     });
 
     if (candidates.length === 0) return;
-
     const picked = pickWeighted(candidates, e => e.weight ?? 1);
     if (!picked) return;
 
@@ -2301,7 +2235,6 @@ This file implements:
   }
 
   function applyTravelEvent(state, run, mission, eventDef) {
-    // Log + apply modifiers
     if (eventDef.logText) {
       pushLog(state, `En route: ${eventDef.logText}`, "warn");
       run.travelLog.push(`• ${eventDef.logText}`);
@@ -2309,7 +2242,6 @@ This file implements:
 
     const mods = eventDef.modifiers || {};
 
-    // Duration multiplier affects remaining travel time (so it feels meaningful mid-run)
     if (typeof mods.durationMult === "number" && mods.durationMult !== 1) {
       const nowM = state.world.time.totalMinutes;
       const elapsed = nowM - run.startedAtMinutes;
@@ -2321,28 +2253,22 @@ This file implements:
       run.eta = minutesToClock(run.etaMinutes);
     }
 
-    // Reward multiplier stacks
     if (typeof mods.rewardMult === "number" && mods.rewardMult !== 1) {
       run.rewardMult *= mods.rewardMult;
       run.rewardMult = clamp(run.rewardMult, 0.2, 2.0);
     }
 
-    // Cargo loss stacks
     if (typeof mods.cargoLossPct === "number") {
       run.cargoLossPct = clamp(run.cargoLossPct + mods.cargoLossPct, 0, 95);
     }
 
-    // Reputation
     if (typeof mods.reputationDelta === "number") {
       run.reputationDelta += mods.reputationDelta;
     }
 
-    // If faction event, note faction
     if (eventDef.factionId) {
       const f = getFaction(eventDef.factionId);
-      if (f) {
-        run.travelLog.push(`  (Faction involved: ${f.name})`);
-      }
+      if (f) run.travelLog.push(`  (Faction involved: ${f.name})`);
     }
 
     if (eventDef.outcomeText) {
@@ -2352,45 +2278,30 @@ This file implements:
   }
 
   function completeMissionRun(state, run, mission) {
-    // Final success/fail roll based on odds
     const odds = run.plan?.odds || { successChance: 0.75 };
-    const successRoll = Math.random();
-    const success = successRoll <= (odds.successChance || 0.75);
+    const success = Math.random() <= (odds.successChance || 0.75);
 
-    // Deadline check (late penalty)
     const deadlineMinutes = (mission.deadlineHours || 24) * 60;
-    const actualDuration = run.durationMinutes;
-    const late = actualDuration > deadlineMinutes;
+    const late = run.durationMinutes > deadlineMinutes;
 
     let deliveryFactor = 1.0;
     let kind = "good";
 
-    if (!success) {
-      // Failure: some salvage possible
-      deliveryFactor = 0.18;
-      kind = "bad";
-    } else if (late) {
-      deliveryFactor = 0.82;
-      kind = "warn";
-    }
+    if (!success) { deliveryFactor = 0.18; kind = "bad"; }
+    else if (late) { deliveryFactor = 0.82; kind = "warn"; }
 
-    // Apply cargo loss
     const cargoFactor = 1 - (run.cargoLossPct / 100);
 
     const base = mission.baseReward || 0;
     const payout = Math.max(0, Math.round(base * run.rewardMult * deliveryFactor * cargoFactor));
-
     state.player.money += payout;
 
-    // Rep bookkeeping (per destination)
     const destId = mission.destinationCityId;
     if (!state.player.reputationByCity[destId]) state.player.reputationByCity[destId] = 0;
     state.player.reputationByCity[destId] += run.reputationDelta;
 
-    // Mark completed once (for tutorial purposes)
     state.player.completedMissions[mission.id] = true;
 
-    // Report
     const originName = getCity(mission.originCityId)?.name || "Origin";
     const destName = getCity(mission.destinationCityId)?.name || "Destination";
     const transportName = getTransport(run.plan.transportId)?.name || run.plan.transportId;
@@ -2404,7 +2315,6 @@ This file implements:
 
     pushLog(state, report, kind);
 
-    // Tutorial completion on first mission
     if (!state.tutorial.completed && mission.tutorial) {
       state.tutorial.step = 4;
       state.tutorial.completed = true;
@@ -2427,47 +2337,6 @@ This file implements:
   }
 
   /* =========================
-     INVESTMENTS MATURITY
-  ========================== */
-  function updateInvestments(state) {
-    const nowM = state.world.time.totalMinutes;
-
-    for (let i = state.player.investments.length - 1; i >= 0; i--) {
-      const inst = state.player.investments[i];
-      if (nowM < inst.maturesAtMinutes) continue;
-
-      const inv = getInvestment(inst.invId);
-      if (!inv) {
-        state.player.investments.splice(i, 1);
-        continue;
-      }
-
-      // Risk roll: higher risk increases chance of partial loss
-      const risk = clamp(inv.risk || 0, 0, 100);
-      const failChance = clamp((risk / 100) * 0.55, 0.02, 0.55);
-      const roll = Math.random();
-
-      let payout = 0;
-      let kind = "good";
-
-      if (roll < failChance) {
-        // partial return
-        payout = Math.round(inv.totalReturn * 0.35);
-        kind = "warn";
-        pushLog(state, `Investment matured (trouble): ${inv.name} returned only ${fmtMoney(payout)}.`, kind);
-      } else {
-        payout = Math.round(inv.totalReturn);
-        pushLog(state, `Investment matured: ${inv.name} paid ${fmtMoney(payout)}.`, kind);
-      }
-
-      state.player.money += payout;
-      state.player.investments.splice(i, 1);
-      flashAlert("Investment payout!");
-      renderHUD();
-    }
-  }
-
-  /* =========================
      TUTORIAL FLOW
   ========================== */
   function maybeStartTutorial() {
@@ -2475,7 +2344,6 @@ This file implements:
     if (!CONFIG.tutorial.enabled) return;
     if (state.tutorial.completed) return;
 
-    // Start at step 0
     if (state.tutorial.step === 0) {
       showTutorialOverlay({
         title: "An Inheritance",
@@ -2499,8 +2367,40 @@ This file implements:
   function maybeAdvanceTutorialFromState() {
     const state = app.state;
     if (state.tutorial.completed) return;
-
-    // Step 1: waiting for player to open planner (handled in openMissionPlanner)
-    // Step 2: waiting for dispatch (handled in dispatchMission)
-    // Step 3: waiting for completion (handled in completeMissionRun)
+    // Step 1: waiting for openMissionPlanner
+    // Step 2: waiting for dispatchMission
+    // Step 3: waiting for completeMissionRun
   }
+
+  /* =========================
+     BOOT
+  ========================== */
+  async function boot() {
+    cacheRefs();
+    app.refs.modalRoot.classList.remove("open");
+
+    try {
+      await loadAllData();
+    } catch (e) {
+      console.error(e);
+      alert("Failed to load game data JSON. Check /data/ paths and filenames.");
+      return;
+    }
+
+    app.state = buildDefaultState(app.data);
+    initWeatherIfNeeded(app.state);
+
+    bindUI();
+    setView("world");
+    setTab("log");
+
+    pushLog(app.state, "You inherit 500 crowns and a tiny warehouse HQ in Dockford.", "good");
+
+    renderAll();
+    startLoop();
+    maybeStartTutorial();
+  }
+
+  window.addEventListener("DOMContentLoaded", boot);
+
+})();
